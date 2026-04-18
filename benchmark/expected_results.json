@@ -1,0 +1,24 @@
+{
+  "buggy_proof": {
+    "description": "Uses one shared k for two odd numbers (forces a=b)",
+    "expected_types": {
+      "must_contain": ["A1"],
+      "may_contain": ["A2", "D", "E"],
+      "must_not_contain": ["C"]
+    },
+    "expected_verdict": "ERROR_DETECTED",
+    "fidelity_should_be_low_if_fixed": true,
+    "notes": "If translator fixes the bug (introduces k,l), fidelity should drop and B should appear."
+  },
+  "correct_proof": {
+    "description": "Valid proof that sum of two odd integers is even",
+    "expected_types": {
+      "must_contain": [],
+      "may_contain": ["D", "E"],
+      "must_not_contain": ["A1", "A2"]
+    },
+    "expected_verdict": "VERIFIED",
+    "fidelity_should_be_low_if_fixed": false,
+    "notes": "Should have high fidelity and no A-type errors."
+  }
+}

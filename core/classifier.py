@@ -168,6 +168,10 @@ class SorryClassification:
     counterexample: Optional[str] = None
     alternative_proof: Optional[str] = None
     salvageable: bool = False  # True if alternative proof exists (but A2 stays A2)
+    # Risk score (for A-loop prioritization)
+    risk_score: float = 0.0
+    # Obligation group (for many-to-many mapping)
+    obligation_group: Optional[str] = None
 
 
 @dataclass

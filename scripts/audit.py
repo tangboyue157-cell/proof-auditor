@@ -7,8 +7,8 @@ Examples:
     # Full audit with automatic back-translation check
     PYTHONPATH=. .venv/bin/python scripts/audit.py benchmark/phase0/buggy_proof.txt --mode auto
 
-    # Skip back-translation (faster, less safe)
-    PYTHONPATH=. .venv/bin/python scripts/audit.py benchmark/phase0/buggy_proof.txt --mode off
+    # Audit a specific theorem from a LaTeX file
+    PYTHONPATH=. .venv/bin/python scripts/audit.py paper.tex --theorem thm:main
 
     # Human reviews the translation
     PYTHONPATH=. .venv/bin/python scripts/audit.py benchmark/phase0/buggy_proof.txt --mode human
@@ -20,10 +20,12 @@ import re
 from pathlib import Path
 from typing import Optional
 
-from core.ai_client import AIClient
+from core.ai_client import AIClient, get_cost_tracker, reset_cost_tracker
 from core.back_translator import BackTranslationMode, BackTranslationResult, run_back_translation
 from core.diagnostician import run_full_audit
+from core.latex_parser import extract_proof_block, parse_latex_file
 from core.lean_lsp import LeanLSP
+from core.translator_parser import parse_translator_output
 
 ROOT_DIR = Path(__file__).parent.parent
 TRANSLATOR_PROMPT = (ROOT_DIR / "agents" / "translator.md").read_text()
@@ -147,7 +149,7 @@ def build_correction_feedback(bt_result: BackTranslationResult) -> str:
     return "\n".join(lines)
 
 
-def run_audit(proof_file: str, mode: str = "auto") -> None:
+def run_audit(proof_file: str, mode: str = "auto", theorem: Optional[str] = None) -> None:
     """Run full audit pipeline with B-loop retranslation support.
 
     Pipeline:
@@ -158,9 +160,32 @@ def run_audit(proof_file: str, mode: str = "auto") -> None:
       R4    Verification (Verifier Agent for Type A suspects)
       R5    Report Generation
     """
+    # Initialize cost tracker
+    tracker = reset_cost_tracker()
+
     proof_path = Path(proof_file)
-    proof_text = proof_path.read_text()
-    proof_name = proof_path.stem
+
+    # ── Handle LaTeX files ──
+    if proof_path.suffix == ".tex":
+        print(f"📄 LaTeX file detected: {proof_file}")
+        proof_text = extract_proof_block(proof_file, label=theorem)
+        if proof_text is None:
+            # List available theorems
+            result = parse_latex_file(proof_file)
+            print(f"\n  Available theorems ({len(result.blocks)}):")
+            for b in result.blocks:
+                if b.env_type != "proof":
+                    label = f" [\\label{{{b.label}}}]" if b.label else ""
+                    name = f" ({b.name})" if b.name else ""
+                    print(f"    • {b.env_type}{name}{label} (line {b.start_line})")
+            print(f"\n  Use --theorem <label> to select one.")
+            return
+        proof_name = theorem or proof_path.stem
+        print(f"  Extracted theorem: {theorem or '(first found)'}")
+    else:
+        proof_text = proof_path.read_text()
+        proof_name = proof_path.stem
+
     bt_mode = BackTranslationMode(mode)
 
     print(f"{'='*60}")
@@ -184,12 +209,27 @@ def run_audit(proof_file: str, mode: str = "auto") -> None:
         # ── Round 1: Translate ──
         if translation_attempt == 0:
             print(f"\n🔄 Round 1: Translating proof to Lean 4...")
+            tracker.set_round("R1_translation")
             lean_code = translate_proof(client, proof_text)
         else:
             print(f"\n🔄 Round 1 (B-loop retry {translation_attempt}/{MAX_RETRANSLATION}):"
                   f" Retranslating with targeted feedback...")
+            tracker.set_round(f"R1_retry_{translation_attempt}")
             correction = build_correction_feedback(bt_result)
             lean_code = translate_proof(client, proof_text, correction_feedback=correction)
+
+        # Parse translator metadata
+        translator_meta = parse_translator_output(lean_code)
+        if translator_meta.has_metadata:
+            if translator_meta.introduced_assumptions:
+                print(f"   ⚠️  Introduced assumptions: {len(translator_meta.introduced_assumptions)}")
+                for ia in translator_meta.introduced_assumptions:
+                    tag = "[INFRA]" if ia.is_infrastructure else "[MATH]"
+                    print(f"      {tag} {ia.assumption}")
+            if translator_meta.ambiguity_ledger:
+                print(f"   📋 Ambiguity choices: {len(translator_meta.ambiguity_ledger)}")
+                for ae in translator_meta.ambiguity_ledger:
+                    print(f"      '{ae.term}' → {ae.choice}")
 
         # Save Lean file
         lean_file = WORKSPACE_DIR / f"{proof_name}.lean"
@@ -204,6 +244,7 @@ def run_audit(proof_file: str, mode: str = "auto") -> None:
             print(f"\n⏭️  Round 1.5: Back-Translation skipped (mode=off)")
             break  # No fidelity check → no B-loop
 
+        tracker.set_round(f"R1.5_backtranslation_{translation_attempt}")
         print(f"\n🔁 Round 1.5: Back-Translation Verification ({bt_mode.value})...")
         bt_result = run_back_translation(
             client=client,
@@ -237,6 +278,7 @@ def run_audit(proof_file: str, mode: str = "auto") -> None:
     # ==========================================
     # Round 2: LSP Analysis
     # ==========================================
+    tracker.set_round("R2_lsp_analysis")
     print(f"\n🔍 Round 2: Analyzing with Lean LSP...")
 
     with LeanLSP() as lsp:
@@ -358,25 +400,35 @@ def run_audit(proof_file: str, mode: str = "auto") -> None:
                 "blocked_by": c.sorry.blocked_by,
                 "salvageable": c.salvageable,
                 "counterexample": c.counterexample,
+                "risk_score": c.risk_score,
             }
             for c in report.classifications
         ],
+        "cost": tracker.to_dict(),
     }
     report_json.write_text(json.dumps(report_data, indent=2, ensure_ascii=False))
     print(f"\n📄 Report saved: {report_json}")
+
+    # Print cost summary
+    print(f"\n{tracker.summary()}")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Proof Auditor — Audit mathematical proofs for logical errors"
     )
-    parser.add_argument("proof_file", help="Path to the proof file (.txt)")
+    parser.add_argument("proof_file", help="Path to the proof file (.txt or .tex)")
     parser.add_argument(
         "--mode",
         choices=["off", "auto", "human", "hybrid"],
         default="auto",
         help="Back-translation verification mode (default: auto)",
     )
+    parser.add_argument(
+        "--theorem",
+        default=None,
+        help="LaTeX label of theorem to audit (e.g., thm:main). Only for .tex files.",
+    )
     args = parser.parse_args()
 
-    run_audit(args.proof_file, mode=args.mode)
+    run_audit(args.proof_file, mode=args.mode, theorem=args.theorem)

@@ -246,6 +246,64 @@ class LeanLSP:
             return f"[LSP error: {e}]"
 
     # ------------------------------------------------------------------
+    # Solver Portfolio Router
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def route_solver(goal: str) -> list[str]:
+        """Route to specialized tactics based on goal content.
+
+        Instead of trying the same generic tactics for every goal,
+        we analyze the goal text and select domain-specific solvers.
+        Generic search tactics (exact?, apply?) are always included.
+
+        Returns:
+            Ordered list of tactics to try (most specific first).
+        """
+        tactics: list[str] = []
+
+        # Domain-specific routing
+        goal_lower = goal.lower()
+
+        # Measurability goals
+        if any(kw in goal for kw in ["Measurable", "AEMeasurable", "StronglyMeasurable",
+                                      "AEStronglyMeasurable", "MeasurableSet"]):
+            tactics.extend(["measurability", "fun_prop"])
+
+        # Continuity goals
+        if any(kw in goal for kw in ["Continuous", "ContinuousOn", "ContinuousAt",
+                                      "ContinuousLinearMap"]):
+            tactics.extend(["continuity", "fun_prop"])
+
+        # Order / inequality goals
+        if any(op in goal for op in ["≤", "≥", "<", ">", "\u2264", "\u2265"]):
+            tactics.extend(["linarith", "nlinarith", "positivity", "omega"])
+
+        # Ring / field algebra
+        if any(op in goal for op in ["*", "^", "⁻¹"]) and "=" in goal:
+            tactics.extend(["ring", "ring_nf", "field_simp"])
+
+        # Pure arithmetic / natural number goals
+        if any(kw in goal_lower for kw in ["nat", "fin", "int", "mod", "div"]):
+            tactics.extend(["omega", "norm_num", "decide"])
+
+        # Set / finset goals
+        if any(kw in goal for kw in ["Finset", "Set.", "Membership", "∈", "⊆", "∪", "∩"]):
+            tactics.extend(["simp", "aesop", "decide"])
+
+        # Norm / metric goals
+        if any(kw in goal for kw in ["‖", "dist", "norm", "Metric"]):
+            tactics.extend(["norm_num", "positivity", "nlinarith"])
+
+        # Generic search tactics (always included, at the end)
+        generic = ["exact?", "apply?", "simp?", "omega", "norm_num", "aesop?"]
+        for t in generic:
+            if t not in tactics:
+                tactics.append(t)
+
+        return tactics
+
+    # ------------------------------------------------------------------
     # Try tactics at a sorry position
     # ------------------------------------------------------------------
 
@@ -255,25 +313,25 @@ class LeanLSP:
         line: int,
         column: int,
         tactics: Optional[list[str]] = None,
+        goal: Optional[str] = None,
     ) -> list[TacticResult]:
         """Try multiple tactics at a sorry position.
 
-        This is crucial for sorry classification:
-          - If exact?/apply? solves it → Type D (API miss)
-          - If simp? solves it → Type D
-          - If nothing works → could be Type A, C, or E
+        Uses the Solver Portfolio Router to select domain-specific
+        tactics based on goal content, unless explicit tactics given.
 
         Args:
             file_path: Relative path.
             line: 1-indexed line of the sorry.
             column: 0-indexed column.
-            tactics: List of tactics to try. Defaults to standard search tactics.
+            tactics: Explicit tactics to try (overrides router).
+            goal: Goal text for routing (if tactics not given).
 
         Returns:
             List of TacticResult.
         """
         if tactics is None:
-            tactics = ["exact?", "apply?", "simp?", "omega", "norm_num", "decide"]
+            tactics = self.route_solver(goal or "")
 
         results = []
         full_path = self.project_root / file_path
@@ -357,14 +415,15 @@ class LeanLSP:
     ) -> dict:
         """Complete diagnosis of a single sorry.
 
-        Combines goal extraction + tactic search to provide
+        Combines goal extraction + routed tactic search to provide
         preliminary classification signals.
 
         Returns:
-            Dict with goal, tactic_results, and suggested_type.
+            Dict with goal, tactic_results, routed_tactics, and suggested_type.
         """
         goal = self.get_goal(file_path, line, column)
-        tactic_results = self.try_tactics(file_path, line, column)
+        routed_tactics = self.route_solver(goal)
+        tactic_results = self.try_tactics(file_path, line, column, goal=goal)
 
         # Preliminary classification based on tactic results
         any_solved = any(r.success for r in tactic_results)

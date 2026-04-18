@@ -374,6 +374,35 @@ def apply_verification(
 # ── Full Audit Pipeline (Rounds 3-5) ────────────────────────
 
 
+def compute_risk_score(
+    cls: SorryClassification,
+    all_classifications: list[SorryClassification],
+) -> float:
+    """Compute a risk score for a sorry classification.
+
+    risk = uncertainty × descendant_count × criticality
+
+    High risk nodes that aren't currently Type A should still
+    be reviewed by the Verifier.
+    """
+    uncertainty = 1.0 - cls.confidence
+
+    # Count how many other sorrys are blocked by this one
+    sorry_id = cls.sorry.sorry_id
+    descendant_count = sum(
+        1 for other in all_classifications
+        if sorry_id in (other.sorry.blocked_by or [])
+    )
+
+    # Criticality: early lines (theorem-level) > late lines (side conditions)
+    # Normalize: line 1 = highest criticality
+    max_line = max((c.sorry.line for c in all_classifications), default=1)
+    criticality = 1.0 - (cls.sorry.line / max(max_line, 1)) * 0.5
+
+    risk = uncertainty * (1 + descendant_count) * criticality
+    return round(risk, 3)
+
+
 def run_full_audit(
     client: AIClient,
     original_proof: str,
@@ -384,33 +413,74 @@ def run_full_audit(
 ) -> AuditReport:
     """Run the complete audit pipeline (Rounds 3-5).
 
-    v2: dependency analysis, A1/A2 split, corrected Verifier logic.
+    v2 features:
+      - Dependency analysis + blocked descendant quarantine
+      - A1/A2 split with corrected Verifier logic
+      - C/D-loop: reclassify C→D if tactic results show solvability
+      - Risk score: Verifier also checks high-risk non-A nodes
+      - Cost tracking per round
     """
+    from core.ai_client import get_cost_tracker
+    tracker = get_cost_tracker()
+
     # Build dependency graph
     sorry_diagnoses = build_dependency_graph(lean_code, sorry_diagnoses)
 
     classifications = []
 
-    # Round 3: Classify each sorry
+    # ── Round 3: Classify each sorry ──
+    tracker.set_round("R3_classification")
     for sorry_data in sorry_diagnoses:
         classification = classify_sorry_with_ai(
             client, sorry_data, original_proof, lean_code, fidelity_score
         )
         classifications.append(classification)
 
-    # Round 4: Verify Type A suspects (only root causes!)
+    # ── C/D-loop: reclassify C→D if tactics actually solved it ──
+    for cls in classifications:
+        if cls.classification == SorryType.C_MATHLIB_GAP:
+            # Check if any tactic already solved it (AI may have missed this)
+            tactic_data = cls.evidence.get("tactic_results", [])
+            if any(tr.get("success") for tr in tactic_data):
+                cls.classification = SorryType.D_API_MISS
+                cls.confidence = max(cls.confidence, 0.85)
+                cls.reasoning += (
+                    "\n\n[C/D-loop] Reclassified C→D: a tactic already solved this goal. "
+                    "The lemma exists but was missed by initial classification."
+                )
+                if cls.internal_axes:
+                    cls.internal_axes.mechanization = MechanizationStatus.API_FOUND
+
+    # ── Compute risk scores ──
+    for cls in classifications:
+        cls.risk_score = compute_risk_score(cls, classifications)
+
+    # ── Round 4: Verify Type A suspects + high-risk nodes ──
+    tracker.set_round("R4_verification")
+
+    # Collect nodes to verify:
+    # 1. All Type A nodes (always)
+    # 2. High-risk non-A nodes (risk > 0.3)
+    RISK_THRESHOLD = 0.3
+    to_verify = []
     for cls in classifications:
         if cls.classification.is_type_a:
-            sorry_data_for_verify = {
-                "goal": cls.sorry.lean_goal,
-                "line": cls.sorry.line,
-            }
-            verify_result = verify_type_a(
-                client, sorry_data_for_verify, original_proof, cls.classification
-            )
-            apply_verification(cls, verify_result)
+            to_verify.append(cls)
+        elif cls.risk_score > RISK_THRESHOLD and cls.classification.value != "G":
+            to_verify.append(cls)
 
-    # Round 5: Generate report
+    for cls in to_verify:
+        sorry_data_for_verify = {
+            "goal": cls.sorry.lean_goal,
+            "line": cls.sorry.line,
+        }
+        verify_result = verify_type_a(
+            client, sorry_data_for_verify, original_proof, cls.classification
+        )
+        apply_verification(cls, verify_result)
+
+    # ── Round 5: Generate report ──
+    tracker.set_round("R5_report")
     report = generate_report(proof_title, classifications)
     return report
 

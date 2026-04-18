@@ -22,6 +22,7 @@ Environment variables:
 import json
 import os
 import sys
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
@@ -76,6 +77,124 @@ class AIResponse:
     model: str
     provider: str
     usage: dict = field(default_factory=dict)
+    latency_ms: float = 0.0
+
+
+@dataclass
+class CostEntry:
+    """A single API call cost record."""
+    round_name: str
+    model: str
+    provider: str
+    input_tokens: int = 0
+    output_tokens: int = 0
+    latency_ms: float = 0.0
+
+
+class CostTracker:
+    """Tracks cumulative token usage and latency across an audit session.
+
+    Usage:
+        tracker = CostTracker()
+        tracker.set_round("R1_translation")
+        # ... API calls automatically tracked ...
+        print(tracker.summary())
+    """
+
+    def __init__(self):
+        self.entries: list[CostEntry] = []
+        self.current_round: str = "unknown"
+
+    def set_round(self, name: str) -> None:
+        """Set the current pipeline round for cost attribution."""
+        self.current_round = name
+
+    def record(self, response: AIResponse) -> None:
+        """Record costs from an AI response."""
+        usage = response.usage or {}
+        self.entries.append(CostEntry(
+            round_name=self.current_round,
+            model=response.model,
+            provider=response.provider,
+            input_tokens=usage.get("input_tokens", usage.get("prompt_tokens", 0)),
+            output_tokens=usage.get("output_tokens", usage.get("completion_tokens", 0)),
+            latency_ms=response.latency_ms,
+        ))
+
+    @property
+    def total_input_tokens(self) -> int:
+        return sum(e.input_tokens for e in self.entries)
+
+    @property
+    def total_output_tokens(self) -> int:
+        return sum(e.output_tokens for e in self.entries)
+
+    @property
+    def total_calls(self) -> int:
+        return len(self.entries)
+
+    @property
+    def total_latency_s(self) -> float:
+        return sum(e.latency_ms for e in self.entries) / 1000
+
+    def per_round(self) -> dict[str, dict]:
+        """Get cost breakdown per pipeline round."""
+        rounds: dict[str, dict] = {}
+        for e in self.entries:
+            if e.round_name not in rounds:
+                rounds[e.round_name] = {"calls": 0, "input_tokens": 0,
+                                         "output_tokens": 0, "latency_ms": 0}
+            r = rounds[e.round_name]
+            r["calls"] += 1
+            r["input_tokens"] += e.input_tokens
+            r["output_tokens"] += e.output_tokens
+            r["latency_ms"] += e.latency_ms
+        return rounds
+
+    def summary(self) -> str:
+        """Human-readable cost summary."""
+        lines = ["Cost Summary:"]
+        lines.append(f"  Total API calls: {self.total_calls}")
+        lines.append(f"  Total input tokens: {self.total_input_tokens:,}")
+        lines.append(f"  Total output tokens: {self.total_output_tokens:,}")
+        lines.append(f"  Total latency: {self.total_latency_s:.1f}s")
+        lines.append("  Per-round breakdown:")
+        for name, data in self.per_round().items():
+            lines.append(
+                f"    {name}: {data['calls']} calls, "
+                f"{data['input_tokens']:,}+{data['output_tokens']:,} tokens, "
+                f"{data['latency_ms']/1000:.1f}s"
+            )
+        return "\n".join(lines)
+
+    def to_dict(self) -> dict:
+        """Serialize for JSON report."""
+        return {
+            "total_calls": self.total_calls,
+            "total_input_tokens": self.total_input_tokens,
+            "total_output_tokens": self.total_output_tokens,
+            "total_latency_s": round(self.total_latency_s, 1),
+            "per_round": self.per_round(),
+        }
+
+
+# Global cost tracker (shared across all AI calls in one audit)
+_global_tracker: Optional[CostTracker] = None
+
+
+def get_cost_tracker() -> CostTracker:
+    """Get or create the global cost tracker."""
+    global _global_tracker
+    if _global_tracker is None:
+        _global_tracker = CostTracker()
+    return _global_tracker
+
+
+def reset_cost_tracker() -> CostTracker:
+    """Reset and return a fresh cost tracker."""
+    global _global_tracker
+    _global_tracker = CostTracker()
+    return _global_tracker
 
 
 def _post(url: str, headers: dict, body: dict) -> dict:
@@ -126,6 +245,8 @@ class AIClient:
     def chat(self, user_message: str, temperature: float = 0.3) -> AIResponse:
         """Send a chat message and get a response.
 
+        Automatically tracks cost via the global CostTracker.
+
         Args:
             user_message: The user's message/prompt.
             temperature: Sampling temperature (0.0 = deterministic, 1.0 = creative).
@@ -139,7 +260,15 @@ class AIClient:
             "gemini": self._call_gemini,
             "openrouter": self._call_openrouter,
         }
-        return dispatch[self.provider](user_message, temperature)
+        t0 = time.time()
+        response = dispatch[self.provider](user_message, temperature)
+        response.latency_ms = (time.time() - t0) * 1000
+
+        # Track cost
+        tracker = get_cost_tracker()
+        tracker.record(response)
+
+        return response
 
     def _call_anthropic(self, message: str, temperature: float) -> AIResponse:
         data = _post(
