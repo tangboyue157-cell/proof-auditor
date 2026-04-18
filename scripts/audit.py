@@ -18,15 +18,20 @@ import argparse
 import json
 import re
 from pathlib import Path
+from typing import Optional
 
 from core.ai_client import AIClient
-from core.back_translator import BackTranslationMode, run_back_translation
+from core.back_translator import BackTranslationMode, BackTranslationResult, run_back_translation
 from core.diagnostician import run_full_audit
 from core.lean_lsp import LeanLSP
 
 ROOT_DIR = Path(__file__).parent.parent
 TRANSLATOR_PROMPT = (ROOT_DIR / "agents" / "translator.md").read_text()
 WORKSPACE_DIR = ROOT_DIR / "ProofAuditor" / "Workspace"
+
+# B-loop configuration
+FIDELITY_THRESHOLD = 0.7   # Below this → trigger retranslation
+MAX_RETRANSLATION = 2       # Maximum retranslation attempts
 
 
 def extract_lean_code(resp: str) -> str:
@@ -38,16 +43,120 @@ def extract_lean_code(resp: str) -> str:
     return resp
 
 
-def run_audit(proof_file: str, mode: str = "auto") -> None:
-    """Run full 6-round audit on a proof file.
+def translate_proof(
+    client: AIClient,
+    proof_text: str,
+    correction_feedback: Optional[str] = None,
+) -> str:
+    """Run Round 1: Translate proof to Lean 4.
 
-    Rounds:
-      1.   Translation (natural language → Lean 4)
-      1.5  Back-Translation verification (Lean 4 → natural language → compare)
-      2.   LSP Analysis (compile, extract sorry goals, try tactics)
-      3.   AI Classification (Diagnostician Agent)
-      4.   Verification (Verifier Agent for Type A suspects)
-      5.   Report Generation
+    Args:
+        client: AI client.
+        proof_text: Original proof text.
+        correction_feedback: If provided, this is a B-loop retry with specific
+            feedback about what was wrong in the previous translation.
+
+    Returns:
+        Lean 4 code as string.
+    """
+    if correction_feedback:
+        # B-loop retry: targeted retranslation prompt
+        user_prompt = f"""{TRANSLATOR_PROMPT}
+
+## ⚠️ RETRANSLATION REQUEST
+
+Your previous translation was found to be UNFAITHFUL to the original proof.
+The back-translation check detected the following discrepancies:
+
+{correction_feedback}
+
+## CRITICAL INSTRUCTIONS for this retry:
+1. You MUST translate the original proof LITERALLY, even if the math is wrong.
+2. If the original says "there exists an integer k such that a = 2k+1 AND b = 2k+1",
+   you MUST use ONE variable k, NOT two separate variables.
+3. If the original proof has a logical error, your Lean code should have the SAME error.
+4. The sorry gaps are there to absorb errors — that is their purpose.
+5. Do NOT "fix" or "improve" anything. Translate word-for-word as much as possible.
+
+Here is the original proof to translate. Output ONLY the Lean 4 code inside ```lean ... ``` blocks.
+Use `sorry` for every proof step and add comments mapping to original steps.
+Include `import Mathlib` at the top.
+
+---
+{proof_text}
+"""
+    else:
+        # First attempt: standard translation
+        user_prompt = f"""{TRANSLATOR_PROMPT}
+
+Here is the proof to translate. Output ONLY the Lean 4 code inside ```lean ... ``` blocks.
+Use `sorry` for every proof step and add comments mapping to original steps.
+Include `import Mathlib` at the top.
+
+---
+{proof_text}
+"""
+
+    client.system_prompt = TRANSLATOR_PROMPT
+    resp = client.chat(user_prompt)
+    return extract_lean_code(resp.content)
+
+
+def print_bt_result(bt_result: BackTranslationResult) -> None:
+    """Print back-translation result to terminal."""
+    if bt_result.overall_match:
+        print(f"   ✅ Translation fidelity: {bt_result.fidelity_score:.0%}")
+        if bt_result.comparisons:
+            mismatches = [c for c in bt_result.comparisons if not c.match]
+            if mismatches:
+                print(f"   ⚠️  {len(mismatches)} step(s) with discrepancies:")
+                for m in mismatches:
+                    print(f"      Step {m.step_id}: {m.discrepancy[:100]}")
+            else:
+                print(f"   ✅ All {len(bt_result.comparisons)} steps match")
+    else:
+        print(f"   🔴 Translation mismatch detected! Fidelity: {bt_result.fidelity_score:.0%}")
+        for c in bt_result.comparisons:
+            if not c.match:
+                print(f"      ❌ Step {c.step_id}: {c.discrepancy[:120]}")
+
+    if bt_result.requires_human:
+        print(f"   👤 {bt_result.human_message}")
+
+
+def build_correction_feedback(bt_result: BackTranslationResult) -> str:
+    """Build targeted correction feedback from back-translation mismatches.
+
+    This tells the Translator exactly WHAT was wrong, so it can fix
+    specifically those steps without blindly retrying.
+    """
+    lines = []
+    for c in bt_result.comparisons:
+        if not c.match:
+            lines.append(
+                f"- STEP {c.step_id}: MISMATCH (confidence: {c.confidence:.0%})\n"
+                f"  Original says: {c.original_text}\n"
+                f"  But your Lean code says: {c.back_translated_text}\n"
+                f"  Discrepancy: {c.discrepancy}\n"
+            )
+    if not lines:
+        lines.append(
+            f"- Overall fidelity score: {bt_result.fidelity_score:.0%} "
+            "(below threshold). Please translate more literally."
+        )
+    return "\n".join(lines)
+
+
+def run_audit(proof_file: str, mode: str = "auto") -> None:
+    """Run full audit pipeline with B-loop retranslation support.
+
+    Pipeline:
+      R1    Translation (natural language → Lean 4)
+      R1.5  Back-Translation verification + B-loop (up to 2 retries)
+      R2    LSP Analysis (compile, extract sorry goals, try tactics)
+      R3    AI Classification (Diagnostician Agent)
+      R4    Verification (Verifier Agent for Type A suspects)
+      R5    Report Generation
     """
     proof_path = Path(proof_file)
     proof_text = proof_path.read_text()
@@ -64,39 +173,38 @@ def run_audit(proof_file: str, mode: str = "auto") -> None:
     client = AIClient(provider="openai", model="gpt-5.4")
 
     # ==========================================
-    # Round 1: Translation
+    # Round 1 + 1.5: Translation with B-loop
     # ==========================================
-    print(f"\n🔄 Round 1: Translating proof to Lean 4...")
-
-    translate_prompt = f"""{TRANSLATOR_PROMPT}
-
-Here is the proof to translate. Output ONLY the Lean 4 code inside ```lean ... ``` blocks.
-Use `sorry` for every proof step and add comments mapping to original steps.
-Include `import Mathlib` at the top.
-
----
-{proof_text}
-"""
-    client.system_prompt = TRANSLATOR_PROMPT
-    resp = client.chat(translate_prompt)
-    lean_code = extract_lean_code(resp.content)
-
-    # Save Lean file
-    lean_file = WORKSPACE_DIR / f"{proof_name}.lean"
-    lean_file.parent.mkdir(parents=True, exist_ok=True)
-    lean_file.write_text(lean_code)
-    lean_rel = str(lean_file.relative_to(ROOT_DIR))
-
-    print(f"   ✅ Translated to {lean_rel}")
-    print(f"   Lines: {len(lean_code.splitlines())}")
-
-    # ==========================================
-    # Round 1.5: Back-Translation Verification
-    # ==========================================
+    lean_code = None
     bt_result = None
-    if bt_mode != BackTranslationMode.OFF:
-        print(f"\n🔁 Round 1.5: Back-Translation Verification ({bt_mode.value})...")
+    translation_attempt = 0
+    persistent_low_fidelity = False  # True if fidelity stays low after all retries
 
+    while translation_attempt <= MAX_RETRANSLATION:
+        # ── Round 1: Translate ──
+        if translation_attempt == 0:
+            print(f"\n🔄 Round 1: Translating proof to Lean 4...")
+            lean_code = translate_proof(client, proof_text)
+        else:
+            print(f"\n🔄 Round 1 (B-loop retry {translation_attempt}/{MAX_RETRANSLATION}):"
+                  f" Retranslating with targeted feedback...")
+            correction = build_correction_feedback(bt_result)
+            lean_code = translate_proof(client, proof_text, correction_feedback=correction)
+
+        # Save Lean file
+        lean_file = WORKSPACE_DIR / f"{proof_name}.lean"
+        lean_file.parent.mkdir(parents=True, exist_ok=True)
+        lean_file.write_text(lean_code)
+        lean_rel = str(lean_file.relative_to(ROOT_DIR))
+        print(f"   ✅ Translated to {lean_rel}")
+        print(f"   Lines: {len(lean_code.splitlines())}")
+
+        # ── Round 1.5: Back-Translation Check ──
+        if bt_mode == BackTranslationMode.OFF:
+            print(f"\n⏭️  Round 1.5: Back-Translation skipped (mode=off)")
+            break  # No fidelity check → no B-loop
+
+        print(f"\n🔁 Round 1.5: Back-Translation Verification ({bt_mode.value})...")
         bt_result = run_back_translation(
             client=client,
             original_proof=proof_text,
@@ -105,26 +213,26 @@ Include `import Mathlib` at the top.
         )
 
         if bt_result:
-            if bt_result.overall_match:
-                print(f"   ✅ Translation fidelity: {bt_result.fidelity_score:.0%}")
-                if bt_result.comparisons:
-                    mismatches = [c for c in bt_result.comparisons if not c.match]
-                    if mismatches:
-                        print(f"   ⚠️  {len(mismatches)} step(s) with discrepancies:")
-                        for m in mismatches:
-                            print(f"      Step {m.step_id}: {m.discrepancy[:100]}")
-                    else:
-                        print(f"   ✅ All {len(bt_result.comparisons)} steps match")
-            else:
-                print(f"   🔴 Translation mismatch detected! Fidelity: {bt_result.fidelity_score:.0%}")
-                for c in bt_result.comparisons:
-                    if not c.match:
-                        print(f"      ❌ Step {c.step_id}: {c.discrepancy[:120]}")
+            print_bt_result(bt_result)
 
-            if bt_result.requires_human:
-                print(f"   👤 {bt_result.human_message}")
-    else:
-        print(f"\n⏭️  Round 1.5: Back-Translation skipped (mode=off)")
+        # ── B-loop decision ──
+        if bt_result and bt_result.fidelity_score >= FIDELITY_THRESHOLD:
+            # Fidelity acceptable → exit loop, proceed to Round 2
+            print(f"   ✅ Fidelity {bt_result.fidelity_score:.0%} ≥ {FIDELITY_THRESHOLD:.0%} → proceeding")
+            break
+
+        translation_attempt += 1
+
+        if translation_attempt <= MAX_RETRANSLATION:
+            print(f"\n   ⚠️  Fidelity {bt_result.fidelity_score:.0%} < {FIDELITY_THRESHOLD:.0%}"
+                  f" → triggering B-loop (retry {translation_attempt}/{MAX_RETRANSLATION})")
+        else:
+            # Exhausted retries
+            persistent_low_fidelity = True
+            print(f"\n   🔶 Fidelity still {bt_result.fidelity_score:.0%} after "
+                  f"{MAX_RETRANSLATION} retries.")
+            print(f"   🔶 This likely indicates the ORIGINAL PROOF itself has issues")
+            print(f"      (not just a translation problem). Continuing with diagnosis...")
 
     # ==========================================
     # Round 2: LSP Analysis
@@ -171,6 +279,9 @@ Include `import Mathlib` at the top.
     print(f"  Total sorry gaps: {report.total_sorrys}")
     if bt_result:
         print(f"  Translation fidelity: {bt_result.fidelity_score:.0%}")
+    print(f"  Translation attempts: {translation_attempt + 1}")
+    if persistent_low_fidelity:
+        print(f"  ⚠️  Persistent low fidelity → possible original proof errors")
     print()
 
     # Group: root causes first, then blocked descendants
@@ -222,6 +333,8 @@ Include `import Mathlib` at the top.
             "mode": bt_mode.value,
             "fidelity_score": bt_result.fidelity_score if bt_result else None,
             "overall_match": bt_result.overall_match if bt_result else None,
+            "translation_attempts": translation_attempt + 1,
+            "persistent_low_fidelity": persistent_low_fidelity,
             "flagged_steps": [
                 {
                     "step_id": c.step_id,
