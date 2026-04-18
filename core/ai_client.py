@@ -2,7 +2,7 @@
 
 Supports multiple providers through a single interface:
   - Anthropic (Claude)
-  - OpenAI (GPT)
+  - OpenAI (GPT / codex-proxy)
   - Google (Gemini)
   - OpenRouter (200+ models)
 
@@ -25,7 +25,29 @@ import sys
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Optional
+
+
+def _load_dotenv():
+    """Load .env file from project root if it exists."""
+    env_file = Path(__file__).parent.parent / ".env"
+    if not env_file.exists():
+        return
+    with open(env_file) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" in line:
+                key, _, value = line.partition("=")
+                key, value = key.strip(), value.strip()
+                # Don't override existing env vars
+                if key and key not in os.environ:
+                    os.environ[key] = value
+
+
+_load_dotenv()
 
 
 # Default models per provider
