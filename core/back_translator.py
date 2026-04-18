@@ -181,42 +181,103 @@ def compare_human(
     original_proof: str,
     back_translation: str,
 ) -> BackTranslationResult:
-    """Display both texts for human comparison.
+    """Display both texts for human comparison and collect judgment.
 
-    Returns a result with requires_human=True and the display message.
+    Interactively prompts the user:
+      - [y] Approve: translation is faithful
+      - [n] Reject: translation has problems → triggers B-loop retranslation
+      - User can optionally describe specific discrepancies
     """
     separator = "─" * 50
-    message = f"""
+    print(f"""
 ╔══════════════════════════════════════════════════╗
 ║        HUMAN REVIEW: Back-Translation Check      ║
 ╚══════════════════════════════════════════════════╝
 
 {separator}
- ORIGINAL PROOF (what you wrote):
+ 📄 ORIGINAL PROOF (what you wrote):
 {separator}
 {original_proof}
 
 {separator}
- BACK-TRANSLATION (what the Lean code actually says):
+ 🔁 BACK-TRANSLATION (what the Lean code actually says):
 {separator}
 {back_translation}
 
 {separator}
- QUESTION: Do these two texts say the same thing mathematically?
- Pay attention to:
-   - Are the same variables used consistently?
-   - Are quantifiers correct (∀ vs ∃)?
-   - Is the logical structure preserved?
+ ❓ Do these two texts say the SAME thing mathematically?
+    Pay attention to:
+      • Are the same variables used consistently?
+      • Are quantifiers correct (∀ vs ∃)?
+      • Is the logical structure preserved?
+      • Are any assumptions added or removed?
 {separator}
-"""
-    print(message)
+""")
+
+    # ── Collect user judgment ──
+    while True:
+        choice = input("  [y] Yes, they match  |  [n] No, there are problems  →  ").strip().lower()
+        if choice in ("y", "yes"):
+            print("   ✅ Human approved: translation is faithful.\n")
+            return BackTranslationResult(
+                back_translation=back_translation,
+                overall_match=True,
+                fidelity_score=1.0,
+                requires_human=True,
+                human_message="Human approved translation as faithful.",
+            )
+        elif choice in ("n", "no"):
+            break
+        else:
+            print("   Please enter 'y' or 'n'.")
+
+    # ── Collect discrepancy details ──
+    print("\n  Please describe the discrepancies (one per line, empty line to finish):")
+    discrepancies = []
+    while True:
+        line = input("    > ").strip()
+        if not line:
+            break
+        discrepancies.append(line)
+
+    # ── Ask for severity ──
+    print("\n  How severe is the mismatch?")
+    print("    [1] Minor: notation/phrasing differences, math is the same")
+    print("    [2] Moderate: some steps differ but overall structure is close")
+    print("    [3] Major: key variables, quantifiers, or logic are wrong")
+
+    severity_map = {"1": 0.8, "2": 0.5, "3": 0.2}
+    while True:
+        severity = input("  Severity [1/2/3] →  ").strip()
+        if severity in severity_map:
+            fidelity = severity_map[severity]
+            break
+        print("   Please enter 1, 2, or 3.")
+
+    # Build step comparisons from human feedback
+    comparisons = []
+    for i, desc in enumerate(discrepancies, 1):
+        comparisons.append(StepComparison(
+            step_id=i,
+            original_text="(human-identified)",
+            back_translated_text="(human-identified)",
+            match=False,
+            confidence=1.0,  # Human is ground truth
+            discrepancy=desc,
+        ))
+
+    discrepancy_text = "\n".join(f"  - {d}" for d in discrepancies) if discrepancies else "(no details)"
+    print(f"\n   🔴 Human rejected translation (fidelity: {fidelity:.0%})")
+    print(f"   Discrepancies recorded: {len(discrepancies)}\n")
 
     return BackTranslationResult(
         back_translation=back_translation,
-        overall_match=True,  # Assume OK unless human says otherwise
-        fidelity_score=0.5,
+        comparisons=comparisons,
+        overall_match=False,
+        fidelity_score=fidelity,
+        flagged_lines=list(range(1, len(discrepancies) + 1)),
         requires_human=True,
-        human_message="Displayed for human review. Proceeding with pipeline.",
+        human_message=f"Human rejected. Discrepancies:\n{discrepancy_text}",
     )
 
 
