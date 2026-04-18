@@ -1,0 +1,68 @@
+# Sorry Classification Schema
+# Each sorry gap is classified into one of these types.
+
+version: v1
+
+classifications:
+  A_logical_gap:
+    severity: critical
+    description: >
+      The original proof contains a genuine logical error or unjustified step.
+      The sorry exists because the claimed statement is false or insufficiently justified.
+    signals:
+      - AI cannot construct any alternative proof
+      - AI can construct a counterexample
+      - The Lean goal is provably false (e.g., via `exact absurd`)
+    action: Flag as potential error in audit report
+
+  B_translation_error:
+    severity: low
+    description: >
+      The AI misunderstood the mathematical content during translation.
+      The Lean statement does not faithfully represent the original claim.
+    signals:
+      - Lean signature does not match original proposition
+      - Type mismatch between mathematical objects
+      - Wrong definitions used
+    action: Re-translate with corrected understanding
+
+  C_mathlib_gap:
+    severity: low
+    description: >
+      The mathematical step is correct, but the required lemma or infrastructure
+      does not exist in Mathlib.
+    signals:
+      - LeanSearch returns no results for the needed lemma
+      - The step requires infrastructure known to be missing (e.g., path integrals)
+      - AI can describe the needed lemma but cannot find it
+    action: Note as Mathlib limitation, does not affect proof correctness
+
+  D_api_miss:
+    severity: low
+    description: >
+      The required lemma exists in Mathlib but the AI failed to find it.
+    signals:
+      - "exact?" or "apply?" can fill the sorry automatically
+      - LeanSearch finds the needed lemma with a different query
+      - The sorry is trivially fillable by a human Lean expert
+    action: Auto-resolve via tactic search
+
+  E_formalization_hard:
+    severity: low
+    description: >
+      The mathematical step is correct but difficult to mechanize.
+      Common with measure theory details, integrability conditions, etc.
+    signals:
+      - The step requires extensive Lean boilerplate
+      - Involves well-known "annoying" formalization patterns
+      - Similar sorrys appear in established projects (e.g., StatLean, Mathlib PRs)
+    action: Note as formalization difficulty, does not affect proof correctness
+
+# Confidence levels for classification
+confidence_levels:
+  high: ">= 0.8"
+  medium: "0.5 - 0.8"
+  low: "< 0.5"
+
+# When confidence is low, escalate to human review
+escalation_threshold: 0.5
