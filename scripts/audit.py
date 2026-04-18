@@ -151,12 +151,14 @@ Include `import Mathlib` at the top.
     # ==========================================
     print(f"\n🧠 Rounds 3-5: AI Classification & Verification...")
 
+    fidelity = bt_result.fidelity_score if bt_result else None
     report = run_full_audit(
         client=client,
         original_proof=proof_text,
         lean_code=lean_code,
         sorry_diagnoses=sorry_diagnoses,
         proof_title=proof_name,
+        fidelity_score=fidelity,
     )
 
     # ==========================================
@@ -171,20 +173,36 @@ Include `import Mathlib` at the top.
         print(f"  Translation fidelity: {bt_result.fidelity_score:.0%}")
     print()
 
-    for cls in report.classifications:
-        emoji = {"A": "🔴", "B": "🟡", "C": "🟠", "D": "🟢", "E": "⚪"}.get(
-            cls.classification.value, "❓"
-        )
-        print(f"  {emoji} [{cls.classification.value}] Line {cls.sorry.line} "
-              f"(confidence: {cls.confidence:.0%})")
-        goal_preview = cls.sorry.lean_goal.replace("\n", " ")[:80]
-        print(f"     Goal: {goal_preview}")
-        print(f"     Reason: {cls.reasoning[:120]}")
+    # Group: root causes first, then blocked descendants
+    roots = [c for c in report.classifications if c.classification.value != "G"]
+    blocked = [c for c in report.classifications if c.classification.value == "G"]
 
-        # Show counterexample if found
-        verification = cls.evidence.get("verification")
-        if verification and verification.get("counterexample_found"):
-            print(f"     🎯 Counterexample: {verification['counterexample'][:120]}")
+    emoji_map = {
+        "A1": "🔴", "A2": "🟠", "B": "🟡", "C": "🟤",
+        "D": "🟢", "E": "⚪", "F": "🔵", "G": "⬜",
+    }
+
+    if roots:
+        print("  ── Root Cause Analysis ──")
+        for cls in roots:
+            emoji = emoji_map.get(cls.classification.value, "❓")
+            salvage = " 🔧salvageable" if cls.salvageable else ""
+            print(f"  {emoji} [{cls.classification.value}] Line {cls.sorry.line} "
+                  f"(confidence: {cls.confidence:.0%}){salvage}")
+            goal_preview = cls.sorry.lean_goal.replace("\n", " ")[:80]
+            print(f"     Goal: {goal_preview}")
+            print(f"     Reason: {cls.reasoning[:120]}")
+
+            if cls.counterexample:
+                print(f"     🎯 Counterexample: {cls.counterexample[:120]}")
+            if cls.alternative_proof:
+                print(f"     🔧 Alt proof: {cls.alternative_proof[:100]}")
+            print()
+
+    if blocked:
+        print(f"  ── Blocked Descendants ({len(blocked)}) ──")
+        for cls in blocked:
+            print(f"  ⬜ [G] Line {cls.sorry.line} ← blocked by {cls.sorry.blocked_by}")
         print()
 
     print(f"{'='*60}")
@@ -214,6 +232,8 @@ Include `import Mathlib` at the top.
                 if not c.match
             ],
         },
+        "root_causes": report.root_causes,
+        "blocked_descendants": report.blocked_count,
         "classifications": [
             {
                 "sorry_id": c.sorry.sorry_id,
@@ -222,6 +242,9 @@ Include `import Mathlib` at the top.
                 "type": c.classification.value,
                 "confidence": c.confidence,
                 "reasoning": c.reasoning,
+                "blocked_by": c.sorry.blocked_by,
+                "salvageable": c.salvageable,
+                "counterexample": c.counterexample,
             }
             for c in report.classifications
         ],
