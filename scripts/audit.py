@@ -149,6 +149,30 @@ def build_correction_feedback(bt_result: BackTranslationResult) -> str:
     return "\n".join(lines)
 
 
+def _print_graph_children(
+    graph, node_id: str, prefix: str,
+    type_map: dict, emoji_map: dict,
+) -> None:
+    """Recursively print graph children as indented tree."""
+    children = graph.blocks(node_id)
+    for i, child_id in enumerate(children):
+        is_last = i == len(children) - 1
+        connector = "└── " if is_last else "├── "
+        child_prefix = prefix + ("    " if is_last else "│   ")
+
+        cls = type_map.get(child_id)
+        if cls:
+            emoji = emoji_map.get(cls.classification.value, "❓")
+            label = f"{emoji} [{cls.classification.value}]"
+        else:
+            label = "⬜ [?]"
+
+        impact = graph.nodes[child_id].impact_score if child_id in graph.nodes else 0
+        impact_str = f" (impact: {impact})" if impact > 0 else ""
+        print(f"{prefix}{connector}{label} {child_id}{impact_str}")
+        _print_graph_children(graph, child_id, child_prefix, type_map, emoji_map)
+
+
 def run_audit(proof_file: str, mode: str = "auto", theorem: Optional[str] = None) -> None:
     """Run full audit pipeline with B-loop retranslation support.
 
@@ -156,6 +180,7 @@ def run_audit(proof_file: str, mode: str = "auto", theorem: Optional[str] = None
       R1    Translation (natural language → Lean 4)
       R1.5  Back-Translation verification + B-loop (up to 2 retries)
       R2    LSP Analysis (compile, extract sorry goals, try tactics)
+      R2.5  Proof Graph Construction (static + AI dependency DAG)
       R3    AI Classification (Diagnostician Agent)
       R4    Verification (Verifier Agent for Type A suspects)
       R5    Report Generation
@@ -297,6 +322,36 @@ def run_audit(proof_file: str, mode: str = "auto", theorem: Optional[str] = None
             print(f"   📌 Line {sg.line}: {goal_preview}...")
 
     # ==========================================
+    # Round 2.5: Proof Graph Construction
+    # ==========================================
+    from core.proof_graph import build_proof_graph
+
+    print(f"\n🕸️  Round 2.5: Building Proof Dependency Graph...")
+    proof_graph = build_proof_graph(
+        client=client,
+        lean_code=lean_code,
+        sorry_diagnoses=sorry_diagnoses,
+        original_proof=proof_text,
+    )
+    print(f"   Nodes: {len(proof_graph.nodes)}")
+    print(f"   Edges: {len(proof_graph.edges)} "
+          f"(static: {sum(1 for e in proof_graph.edges if e.source == 'static')}, "
+          f"AI: {sum(1 for e in proof_graph.edges if e.source == 'ai')})")
+    print(f"   Root nodes: {len(proof_graph.root_nodes)}")
+    print(f"   Independent groups: {len(proof_graph.independent_groups)}")
+    if proof_graph.critical_path:
+        print(f"   Critical path: {' → '.join(proof_graph.critical_path)}")
+
+    # Update sorry_diagnoses with graph info
+    for diag in sorry_diagnoses:
+        sid = f"sorry_L{diag['line']}"
+        diag["blocked_by"] = proof_graph.blocked_by(sid)
+        diag["is_blocked"] = len(diag["blocked_by"]) > 0
+        if sid in proof_graph.nodes:
+            diag["impact_score"] = proof_graph.nodes[sid].impact_score
+            diag["depth"] = proof_graph.nodes[sid].depth
+
+    # ==========================================
     # Rounds 3-5: AI Classification + Verification + Report
     # ==========================================
     print(f"\n🧠 Rounds 3-5: AI Classification & Verification...")
@@ -326,29 +381,47 @@ def run_audit(proof_file: str, mode: str = "auto", theorem: Optional[str] = None
         print(f"  ⚠️  Persistent low fidelity → possible original proof errors")
     print()
 
-    # Group: root causes first, then blocked descendants
-    roots = [c for c in report.classifications if c.classification.value != "G"]
-    blocked = [c for c in report.classifications if c.classification.value == "G"]
-
+    # ── Proof Graph Tree Display ──
     emoji_map = {
         "A1": "🔴", "A2": "🟠", "B": "🟡", "C": "🟤",
         "D": "🟢", "E": "⚪", "F": "🔵", "G": "⬜",
     }
+    type_map = {c.sorry.sorry_id: c for c in report.classifications}
+
+    if proof_graph.edges:
+        print("  ── Root Cause Tree ──")
+        print()
+        for root in proof_graph.root_nodes:
+            cls = type_map.get(root.sorry_id)
+            if cls:
+                emoji = emoji_map.get(cls.classification.value, "❓")
+                label = f"{emoji} [{cls.classification.value}]"
+                conf = f" ({cls.confidence:.0%})"
+            else:
+                label = "❓"
+                conf = ""
+            print(f"  {label} {root.sorry_id}{conf} (impact: {root.impact_score})")
+            _print_graph_children(proof_graph, root.sorry_id, "  │   ", type_map, emoji_map)
+        print()
+
+    # ── Flat classification detail ──
+    roots = [c for c in report.classifications if c.classification.value != "G"]
+    blocked = [c for c in report.classifications if c.classification.value == "G"]
 
     if roots:
-        print("  ── Root Cause Analysis ──")
+        print("  ── Classification Detail ──")
         for cls in roots:
             emoji = emoji_map.get(cls.classification.value, "❓")
             salvage = " 🔧salvageable" if cls.salvageable else ""
             print(f"  {emoji} [{cls.classification.value}] Line {cls.sorry.line} "
-                  f"(confidence: {cls.confidence:.0%}){salvage}")
+                  f"(confidence: {cls.confidence:.0%}, risk: {cls.risk_score}){salvage}")
             goal_preview = cls.sorry.lean_goal.replace("\n", " ")[:80]
             print(f"     Goal: {goal_preview}")
             print(f"     Reason: {cls.reasoning[:120]}")
 
             if cls.counterexample:
                 print(f"     🎯 Counterexample: {cls.counterexample[:120]}")
-            if cls.alternative_proof:
+            if cls.salvageable and cls.alternative_proof:
                 print(f"     🔧 Alt proof: {cls.alternative_proof[:100]}")
             print()
 
@@ -405,6 +478,7 @@ def run_audit(proof_file: str, mode: str = "auto", theorem: Optional[str] = None
             for c in report.classifications
         ],
         "cost": tracker.to_dict(),
+        "proof_graph": proof_graph.to_dict(),
     }
     report_json.write_text(json.dumps(report_data, indent=2, ensure_ascii=False))
     print(f"\n📄 Report saved: {report_json}")
