@@ -27,6 +27,7 @@ Thumbs.db
 # Lean
 .lake/
 lake-packages/
+lake-manifest.json
 
 # Logs and outputs
 *.log
