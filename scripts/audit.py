@@ -1,20 +1,28 @@
 """Proof Auditor — End-to-end audit pipeline.
 
 Usage:
-    PYTHONPATH=. .venv/bin/python scripts/audit.py <proof_file>
+    PYTHONPATH=. .venv/bin/python scripts/audit.py <proof_file> [--mode off|auto|human|hybrid]
 
-Example:
-    PYTHONPATH=. .venv/bin/python scripts/audit.py benchmark/phase0/buggy_proof.txt
+Examples:
+    # Full audit with automatic back-translation check
+    PYTHONPATH=. .venv/bin/python scripts/audit.py benchmark/phase0/buggy_proof.txt --mode auto
+
+    # Skip back-translation (faster, less safe)
+    PYTHONPATH=. .venv/bin/python scripts/audit.py benchmark/phase0/buggy_proof.txt --mode off
+
+    # Human reviews the translation
+    PYTHONPATH=. .venv/bin/python scripts/audit.py benchmark/phase0/buggy_proof.txt --mode human
 """
 
+import argparse
 import json
-import sys
 import re
 from pathlib import Path
 
 from core.ai_client import AIClient
-from core.lean_lsp import LeanLSP
+from core.back_translator import BackTranslationMode, run_back_translation
 from core.diagnostician import run_full_audit
+from core.lean_lsp import LeanLSP
 
 ROOT_DIR = Path(__file__).parent.parent
 TRANSLATOR_PROMPT = (ROOT_DIR / "agents" / "translator.md").read_text()
@@ -30,15 +38,26 @@ def extract_lean_code(resp: str) -> str:
     return resp
 
 
-def run_audit(proof_file: str) -> None:
-    """Run full 5-round audit on a proof file."""
+def run_audit(proof_file: str, mode: str = "auto") -> None:
+    """Run full 6-round audit on a proof file.
+
+    Rounds:
+      1.   Translation (natural language → Lean 4)
+      1.5  Back-Translation verification (Lean 4 → natural language → compare)
+      2.   LSP Analysis (compile, extract sorry goals, try tactics)
+      3.   AI Classification (Diagnostician Agent)
+      4.   Verification (Verifier Agent for Type A suspects)
+      5.   Report Generation
+    """
     proof_path = Path(proof_file)
     proof_text = proof_path.read_text()
     proof_name = proof_path.stem
+    bt_mode = BackTranslationMode(mode)
 
     print(f"{'='*60}")
     print(f"  PROOF AUDITOR — Full Audit Pipeline")
     print(f"  Input: {proof_file}")
+    print(f"  Back-Translation Mode: {bt_mode.value}")
     print(f"{'='*60}")
 
     # Initialize AI client
@@ -72,6 +91,42 @@ Include `import Mathlib` at the top.
     print(f"   Lines: {len(lean_code.splitlines())}")
 
     # ==========================================
+    # Round 1.5: Back-Translation Verification
+    # ==========================================
+    bt_result = None
+    if bt_mode != BackTranslationMode.OFF:
+        print(f"\n🔁 Round 1.5: Back-Translation Verification ({bt_mode.value})...")
+
+        bt_result = run_back_translation(
+            client=client,
+            original_proof=proof_text,
+            lean_code=lean_code,
+            mode=bt_mode,
+        )
+
+        if bt_result:
+            if bt_result.overall_match:
+                print(f"   ✅ Translation fidelity: {bt_result.fidelity_score:.0%}")
+                if bt_result.comparisons:
+                    mismatches = [c for c in bt_result.comparisons if not c.match]
+                    if mismatches:
+                        print(f"   ⚠️  {len(mismatches)} step(s) with discrepancies:")
+                        for m in mismatches:
+                            print(f"      Step {m.step_id}: {m.discrepancy[:100]}")
+                    else:
+                        print(f"   ✅ All {len(bt_result.comparisons)} steps match")
+            else:
+                print(f"   🔴 Translation mismatch detected! Fidelity: {bt_result.fidelity_score:.0%}")
+                for c in bt_result.comparisons:
+                    if not c.match:
+                        print(f"      ❌ Step {c.step_id}: {c.discrepancy[:120]}")
+
+            if bt_result.requires_human:
+                print(f"   👤 {bt_result.human_message}")
+    else:
+        print(f"\n⏭️  Round 1.5: Back-Translation skipped (mode=off)")
+
+    # ==========================================
     # Round 2: LSP Analysis
     # ==========================================
     print(f"\n🔍 Round 2: Analyzing with Lean LSP...")
@@ -88,7 +143,8 @@ Include `import Mathlib` at the top.
         for sg in analysis.sorry_goals:
             diagnosis = lsp.diagnose_sorry(lean_rel, sg.line, sg.column)
             sorry_diagnoses.append(diagnosis)
-            print(f"   📌 Line {sg.line}: {sg.goal[:80]}...")
+            goal_preview = sg.goal.replace("\n", " ")[:60]
+            print(f"   📌 Line {sg.line}: {goal_preview}...")
 
     # ==========================================
     # Rounds 3-5: AI Classification + Verification + Report
@@ -111,6 +167,8 @@ Include `import Mathlib` at the top.
     print(f"{'='*60}")
     print(f"  Verdict: {report.verdict}")
     print(f"  Total sorry gaps: {report.total_sorrys}")
+    if bt_result:
+        print(f"  Translation fidelity: {bt_result.fidelity_score:.0%}")
     print()
 
     for cls in report.classifications:
@@ -119,7 +177,8 @@ Include `import Mathlib` at the top.
         )
         print(f"  {emoji} [{cls.classification.value}] Line {cls.sorry.line} "
               f"(confidence: {cls.confidence:.0%})")
-        print(f"     Goal: {cls.sorry.lean_goal[:80]}")
+        goal_preview = cls.sorry.lean_goal.replace("\n", " ")[:80]
+        print(f"     Goal: {goal_preview}")
         print(f"     Reason: {cls.reasoning[:120]}")
 
         # Show counterexample if found
@@ -141,6 +200,20 @@ Include `import Mathlib` at the top.
         "proof_title": report.proof_title,
         "verdict": report.verdict,
         "total_sorrys": report.total_sorrys,
+        "back_translation": {
+            "mode": bt_mode.value,
+            "fidelity_score": bt_result.fidelity_score if bt_result else None,
+            "overall_match": bt_result.overall_match if bt_result else None,
+            "flagged_steps": [
+                {
+                    "step_id": c.step_id,
+                    "discrepancy": c.discrepancy,
+                    "confidence": c.confidence,
+                }
+                for c in (bt_result.comparisons if bt_result else [])
+                if not c.match
+            ],
+        },
         "classifications": [
             {
                 "sorry_id": c.sorry.sorry_id,
@@ -158,9 +231,16 @@ Include `import Mathlib` at the top.
 
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print("Usage: PYTHONPATH=. .venv/bin/python scripts/audit.py <proof_file>")
-        print("Example: PYTHONPATH=. .venv/bin/python scripts/audit.py benchmark/phase0/buggy_proof.txt")
-        sys.exit(1)
+    parser = argparse.ArgumentParser(
+        description="Proof Auditor — Audit mathematical proofs for logical errors"
+    )
+    parser.add_argument("proof_file", help="Path to the proof file (.txt)")
+    parser.add_argument(
+        "--mode",
+        choices=["off", "auto", "human", "hybrid"],
+        default="auto",
+        help="Back-translation verification mode (default: auto)",
+    )
+    args = parser.parse_args()
 
-    run_audit(sys.argv[1])
+    run_audit(args.proof_file, mode=args.mode)
