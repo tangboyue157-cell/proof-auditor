@@ -1,0 +1,202 @@
+# Lean 4 / Mathlib Translation Patterns & Gotchas
+#
+# This file encodes common translation pitfalls discovered during proof auditing.
+# The translator agent consults matching entries to avoid known mistakes.
+#
+# Format:
+#   trigger:  keywords that activate this pattern (matched case-insensitively)
+#   category: type of pattern (definition | tactic | structure | gotcha)
+#   guidance: what the translator should know
+#   severity: how likely a mistake is without this guidance (low | medium | high)
+
+patterns:
+
+  # ── Number Theory ──────────────────────────────────────
+
+  - trigger: ["odd", "even", "parity"]
+    category: definition
+    severity: high
+    guidance: |
+      Lean's `Odd n` unfolds to `∃ k, n = 2 * k + 1`.
+      `Even n` unfolds to `∃ k, n = 2 * k`.
+      If the proof explicitly writes "∃ k such that a = 2k+1", you may use either
+      `Odd a` or the explicit existential — but be consistent.
+      CRITICAL: if the proof uses ONE variable k for two different numbers, preserve that.
+
+  - trigger: ["divisible", "divides", "factor"]
+    category: definition
+    severity: medium
+    guidance: |
+      Divisibility in Lean is `a ∣ b` (typed as `\mid` or `\|`).
+      `Dvd.dvd a b` is the underlying definition.
+      "a divides b" means `a ∣ b`, NOT `b ∣ a`.
+
+  # ── Quantifiers and Logic ──────────────────────────────
+
+  - trigger: ["for all", "for every", "for each", "∀"]
+    category: structure
+    severity: medium
+    guidance: |
+      Lean uses `∀ x : α, P x` or `∀ x ∈ s, P x`.
+      When the proof says "for all x in S", use `∀ x ∈ S, P x` (set membership)
+      or `∀ x : S, P x` (subtype), depending on context.
+
+  - trigger: ["there exists", "there exist", "∃", "some"]
+    category: structure
+    severity: high
+    guidance: |
+      Lean uses `∃ x : α, P x`.
+      When destructuring existentials, use `obtain ⟨x, hx⟩ := h` or `rcases h with ⟨x, hx⟩`.
+      CRITICAL: count the number of existential variables carefully.
+      If the proof says "there exist k₁ and k₂", you need `∃ k₁ k₂, ...`.
+      If it says "there exists k such that ... and ...", you need `∃ k, ... ∧ ...`.
+
+  # ── Real Analysis ──────────────────────────────────────
+
+  - trigger: ["limit", "tends to", "converges to", "→", "approaches"]
+    category: definition
+    severity: high
+    guidance: |
+      Mathlib uses FILTER-BASED limits, not ε-δ.
+      "lim_{n→∞} f(n) = L"  →  `Filter.Tendsto f atTop (𝓝 L)`
+      "lim_{x→a} f(x) = L"  →  `Filter.Tendsto f (𝓝 a) (𝓝 L)`
+      Do NOT try to formalize ε-δ definitions directly.
+
+  - trigger: ["continuous", "continuity"]
+    category: definition
+    severity: medium
+    guidance: |
+      Use `Continuous f` for global continuity.
+      Use `ContinuousOn f s` for continuity on a set.
+      Use `ContinuousAt f a` for pointwise continuity.
+      The tactic `continuity` or `fun_prop` can often close these goals.
+
+  - trigger: ["derivative", "differentiable", "differentiation", "d/dx"]
+    category: definition
+    severity: high
+    guidance: |
+      `HasDerivAt f f' x` means f'(x) = f' (a SCALAR, not a function).
+      `deriv f x` returns the derivative value at x.
+      For multivariate: use `fderiv` (Fréchet derivative).
+      `HasFDerivAt f f' x` where f' is a continuous linear map.
+
+  - trigger: ["integral", "integrate", "∫"]
+    category: definition
+    severity: medium
+    guidance: |
+      `∫ x, f x ∂μ` is the Bochner integral.
+      `∫⁻ x, f x ∂μ` is the Lebesgue integral (for ENNReal values).
+      The proof must establish `Integrable f μ` before using integral properties.
+
+  # ── Probability ────────────────────────────────────────
+
+  - trigger: ["random variable", "distribution", "distributed"]
+    category: definition
+    severity: high
+    guidance: |
+      Mathlib has NO standalone "random variable" type.
+      A random variable is a measurable function `X : Ω → ℝ`.
+      "X ~ N(μ,σ²)" becomes `Measure.map X ℙ = gaussianReal μ σ²`.
+      Do NOT invent a `RandomVariable` type.
+
+  - trigger: ["expectation", "expected value", "E[", "𝔼"]
+    category: definition
+    severity: high
+    guidance: |
+      There is NO `Expectation X` in Mathlib.
+      E[X] is `∫ ω, X ω ∂ℙ` (the Bochner integral against the probability measure).
+      E[f(X)] uses the change-of-variables formula via `integral_map`.
+
+  - trigger: ["variance", "Var", "var("]
+    category: definition
+    severity: medium
+    guidance: |
+      `ProbabilityTheory.variance X μ` is the variance.
+      It equals `∫ ω, (X ω - ∫ ω, X ω ∂μ)^2 ∂μ`.
+      For independence: `variance_add` requires `IndepFun`.
+
+  - trigger: ["independent", "independence", "i.i.d.", "iid"]
+    category: definition
+    severity: high
+    guidance: |
+      Pairwise independence: `ProbabilityTheory.IndepFun X Y μ`
+      Family independence: `ProbabilityTheory.iIndepFun f μ`
+      "i.i.d." means `iIndepFun` PLUS `IdentDistrib`.
+
+  - trigger: ["convergence in distribution", "weak convergence", "→ᵈ"]
+    category: definition
+    severity: high
+    guidance: |
+      Mathlib does NOT have a single `ConvergesInDistribution` predicate.
+      Use weak convergence of measures:
+        `MeasureTheory.Measure.tendsto_iff_forall_integral_tendsto`
+      Or characteristic function convergence (Lévy continuity theorem).
+
+  - trigger: ["central limit theorem", "CLT", "asymptotic normality"]
+    category: gotcha
+    severity: high
+    guidance: |
+      CLT is generally NOT in Mathlib. If the proof invokes CLT, use `sorry`
+      with a clear CLAIMED_REASON comment. The sorry will be classified as
+      Type D (Likely Correct — library gap) by the Diagnostician.
+      Do NOT try to state CLT from scratch unless the proof is specifically about CLT.
+
+  - trigger: ["delta method", "Taylor expansion"]
+    category: gotcha
+    severity: high
+    guidance: |
+      The Delta Method is NOT in Mathlib. Same treatment as CLT above.
+      Key formula: if √n(Xₙ - μ) →ᵈ N(0,σ²), then √n(g(Xₙ) - g(μ)) →ᵈ N(0, [g'(μ)]² σ²).
+      Note the SQUARE on g'(μ). This is a common source of errors in proofs.
+
+  # ── Measure Theory ─────────────────────────────────────
+
+  - trigger: ["measurable", "measurability", "σ-algebra"]
+    category: gotcha
+    severity: high
+    guidance: |
+      `Measurable f` ≠ `AEMeasurable f μ`. The latter is strictly weaker.
+      `StronglyMeasurable f` ≠ `AEStronglyMeasurable f μ`.
+      When informal proofs say "f is measurable", they usually mean `AEStronglyMeasurable`.
+      Use `measurability` or `fun_prop` tactics.
+
+  - trigger: ["almost everywhere", "a.e.", "almost surely", "a.s."]
+    category: definition
+    severity: medium
+    guidance: |
+      "Almost everywhere" in Lean: `∀ᵐ x ∂μ, P x`
+      "f = g a.e.": `f =ᵐ[μ] g`
+      The `ae` filter is `MeasureTheory.ae μ`.
+
+  - trigger: ["Fubini", "iterated integral", "product measure"]
+    category: gotcha
+    severity: medium
+    guidance: |
+      Fubini's theorem in Mathlib: `MeasureTheory.integral_prod`.
+      Requires `Integrable f (μ.prod ν)` (joint integrability).
+      σ-finiteness is usually needed: `[SigmaFinite μ] [SigmaFinite ν]`.
+
+  # ── Proof Structure ────────────────────────────────────
+
+  - trigger: ["contradiction", "suppose not", "assume for contradiction"]
+    category: structure
+    severity: medium
+    guidance: |
+      Use `by_contra h` to start a proof by contradiction.
+      The hypothesis `h` will be `¬ P` where `P` is the goal.
+      Use `push_neg at h` to simplify negated quantifiers.
+
+  - trigger: ["induction", "inductive", "base case", "inductive step"]
+    category: structure
+    severity: medium
+    guidance: |
+      Use `induction n with ...` for simple induction.
+      Use `Nat.strongRecOn` for strong induction.
+      Name the induction hypothesis explicitly.
+
+  - trigger: ["without loss of generality", "WLOG", "w.l.o.g."]
+    category: structure
+    severity: medium
+    guidance: |
+      Use `wlog h : P` in Lean 4 / Mathlib.
+      This creates two goals: one where P holds, one where ¬P holds.

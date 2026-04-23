@@ -1,68 +1,140 @@
-# Sorry Classification Schema
-# Each sorry gap is classified into one of these types.
+# Sorry Classification Schema v4
+# Refactored from 8-type (A1-G) to 5-type (A-E) with [0,1] verification score.
+#
+# Core principle:
+#   s = 0     →  Lean compiled ¬P  →  VERIFIED_ERROR   (Type A)
+#   s = 1     →  Lean compiled P   →  VERIFIED_CORRECT  (Type B)
+#   s ∈ (0,1) →  neither compiled  →  NEEDS_REVIEW      (Types C/D/E)
+#
+# Translation errors are handled as a pipeline quality gate (Round 1.5),
+# NOT as a sorry classification.
 
-version: v1
+version: v4
+
+verdicts:
+  VERIFIED_ERROR:
+    description: >
+      Lean type-checker accepted a proof of ¬P.
+      The mathematical claim is mechanically refuted.
+    types: [A]
+
+  VERIFIED_CORRECT:
+    description: >
+      Lean type-checker accepted a proof of P.
+      The sorry gap was mechanically resolved.
+    types: [B]
+
+  NEEDS_REVIEW:
+    description: >
+      Neither P nor ¬P could be mechanically verified.
+      AI provides a verification score and natural language explanation.
+    types: [C, D, E]
+
+  TRANSLATION_FAILED:
+    description: >
+      The translation quality gate (Round 1.5) failed after max retries.
+      The audit pipeline was terminated. No sorry classifications are produced.
+    types: []
 
 classifications:
-  A_logical_gap:
-    severity: critical
+  A_refuted:
+    verdict: VERIFIED_ERROR
+    verification_score: 0.0
     description: >
-      The original proof contains a genuine logical error or unjustified step.
-      The sorry exists because the claimed statement is false or insufficiently justified.
+      The goal is mechanically refuted — Lean compiled a proof of ¬P.
+      This includes concrete counterexamples verified by `decide`/`native_decide`,
+      structural negation proofs, and any method that produces a Lean proof term of ¬P.
     signals:
-      - AI cannot construct any alternative proof
-      - AI can construct a counterexample
-      - The Lean goal is provably false (e.g., via `exact absurd`)
-    action: Flag as potential error in audit report
+      - Lean compiles `¬P` or derives `False` from P and the hypotheses
+      - A concrete counterexample passes `decide` or `native_decide`
+      - `omega`/`linarith` proves the negation
+    action: Flag as definitive logical error in audit report
+    legacy_mapping: "A1 (when counterexample was mechanically verified)"
 
-  B_translation_error:
-    severity: low
+  B_verified:
+    verdict: VERIFIED_CORRECT
+    verification_score: 1.0
     description: >
-      The AI misunderstood the mathematical content during translation.
-      The Lean statement does not faithfully represent the original claim.
+      The sorry gap was successfully filled — Lean compiled a proof of P.
+      This includes single-tactic resolutions (exact?, apply?, simp, aesop, omega, decide)
+      and multi-step AI-generated proofs that pass Lean type-checking.
     signals:
-      - Lean signature does not match original proposition
-      - Type mismatch between mathematical objects
-      - Wrong definitions used
-    action: Re-translate with corrected understanding
+      - "exact?" or "apply?" returns a matching lemma
+      - "simp", "omega", "linarith", "aesop", "decide" closes the goal
+      - AI-generated multi-line proof compiles without sorry
+    action: Auto-resolved; report as confirmed correct
+    legacy_mapping: "D (API Miss — tactic solved it)"
 
-  C_mathlib_gap:
-    severity: low
+  C_suspect_error:
+    verdict: NEEDS_REVIEW
+    verification_score_range: "(0, ~0.3]"
     description: >
-      The mathematical step is correct, but the required lemma or infrastructure
-      does not exist in Mathlib.
+      AI suspects the original proof's reasoning is flawed, but cannot
+      produce a mechanically verified refutation. The claim may or may not be true;
+      the specific justification method appears invalid.
     signals:
-      - LeanSearch returns no results for the needed lemma
-      - The step requires infrastructure known to be missing (e.g., path integrals)
-      - AI can describe the needed lemma but cannot find it
-    action: Note as Mathlib limitation, does not affect proof correctness
+      - The claimed justification method doesn't apply (e.g., "by Fubini" when Tonelli is needed)
+      - AI analysis shows the reasoning path is invalid
+      - No counterexample found, but same-method proof fails
+      - Referenced theorem conditions are not met
+    action: >
+      Flag as high-priority review item. Provide AI natural language explanation.
+      The mathematician should verify whether the reasoning is valid.
+    legacy_mapping: "A2 (Invalid Justification — no mechanical verification)"
 
-  D_api_miss:
-    severity: low
+  D_likely_correct:
+    verdict: NEEDS_REVIEW
+    verification_score_range: "[~0.7, 1)"
     description: >
-      The required lemma exists in Mathlib but the AI failed to find it.
+      AI believes the mathematical step is correct, but cannot produce a
+      mechanically verified proof. The gap is due to library limitations
+      or formalization difficulty, not mathematical error.
     signals:
-      - "exact?" or "apply?" can fill the sorry automatically
-      - LeanSearch finds the needed lemma with a different query
-      - The sorry is trivially fillable by a human Lean expert
-    action: Auto-resolve via tactic search
+      - Mathlib lacks the needed lemma (LeanSearch returns nothing)
+      - Step requires extensive Lean boilerplate (measure theory, integrability)
+      - AI can describe how to prove it but the proof is too complex to mechanize
+      - Similar sorrys appear in established Mathlib PRs
+    action: >
+      Report as likely correct with AI explanation.
+      No mathematical fix needed; gap is a formalization limitation.
+    legacy_mapping: "C (Mathlib Gap) + E (Formalization Hard)"
 
-  E_formalization_hard:
-    severity: low
+  E_indeterminate:
+    verdict: NEEDS_REVIEW
+    verification_score_range: "(~0.3, ~0.7)"
     description: >
-      The mathematical step is correct but difficult to mechanize.
-      Common with measure theory details, integrability conditions, etc.
+      Insufficient information to make a directional judgment.
+      The system cannot determine whether the step is correct or incorrect.
     signals:
-      - The step requires extensive Lean boilerplate
-      - Involves well-known "annoying" formalization patterns
-      - Similar sorrys appear in established projects (e.g., StatLean, Mathlib PRs)
-    action: Note as formalization difficulty, does not affect proof correctness
+      - Original proof text is genuinely ambiguous or underspecified
+      - Sorry depends on upstream unresolved sorrys (blocked dependency)
+      - AI analysis is inconclusive
+      - Multiple valid interpretations exist
+    action: >
+      Flag for human review with AI explanation of the uncertainty.
+      If blocked by upstream, note the dependency.
+    legacy_mapping: "F (Source Ambiguity) + G (Blocked Descendant)"
 
-# Confidence levels for classification
-confidence_levels:
-  high: ">= 0.8"
-  medium: "0.5 - 0.8"
-  low: "< 0.5"
+# Translation quality gate (NOT a sorry classification)
+translation_quality_gate:
+  round: "1.5"
+  description: >
+    Back-translation fidelity check. If fidelity is below threshold,
+    trigger re-translation. After max retries, terminate pipeline.
+  threshold: 0.7
+  max_retries: 3
+  on_failure: "verdict = TRANSLATION_FAILED, pipeline terminates"
 
-# When confidence is low, escalate to human review
-escalation_threshold: 0.5
+# Confidence and score thresholds
+thresholds:
+  a_min_confidence: 0.85
+  c_suspect_upper: 0.3
+  d_likely_lower: 0.7
+  escalation: 0.5
+
+# Risk score formula (unchanged)
+risk_score:
+  formula: "uncertainty × (1 + descendant_count) × criticality"
+  uncertainty: "1 - confidence"
+  descendant_count: "from R1+ structural downstream_count"
+  criticality: "1.0 for root sorrys, line-position based for others"

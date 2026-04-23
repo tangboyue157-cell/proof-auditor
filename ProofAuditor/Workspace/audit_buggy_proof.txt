@@ -1,0 +1,351 @@
+{
+  "proof_title": "buggy_proof",
+  "diagnostician_verdict": "ERROR_DETECTED",
+  "final_verdict": "ERROR_DETECTED",
+  "adjudicator_confidence": 0.5,
+  "total_sorrys": 4,
+  "adjudication": {
+    "final_verdict": "ERROR_DETECTED",
+    "confidence": 0.5,
+    "has_overrides": false,
+    "overrides": [],
+    "narrative": {
+      "diagnosis": "",
+      "fix_suggestion": "",
+      "impact_assessment": ""
+    }
+  },
+  "back_translation": {
+    "mode": "auto",
+    "fidelity_score": 0.5076984126984126,
+    "overall_match": true,
+    "translation_attempts": 4,
+    "persistent_low_fidelity": true,
+    "back_translated_text": "**Theorem.** For any integers \\(a\\) and \\(b\\), if there exists an integer \\(m\\) such that \\(a=2m+1\\) and there exists an integer \\(n\\) such that \\(b=2n+1\\), then there exists an integer \\(t\\) such that\n\\[\na+b=2t.\n\\]\n\n**Proof.** Let \\(a\\) and \\(b\\) be integers, and assume that there exists an integer \\(m\\) such that \\(a=2m+1\\) and there exists an integer \\(n\\) such that \\(b=2n+1\\).\n\nBy definition of odd integers, there exists an integer \\(k\\) such that\n\\[\na=2k+1 \\quad \\text{and} \\quad b=2k+1.\n\\]\nTherefore,\n\\[\na+b=(2k+1)+(2k+1).\n\\]\nBy rearranging the terms, we get\n\\[\na+b=4k+2=2(2k+1).\n\\]\nSince \\(2k+1\\) is an integer, we conclude that there exists an integer \\(t\\) such that\n\\[\na+b=2t.\n\\]\nHence \\(a+b\\) is even. ∎",
+    "original_proof": "Theorem: The sum of two odd integers is even.\n\nProof:\n1. Let a and b be two odd integers.\n2. By definition of odd integers, there exists an integer k such that a = 2k + 1 and b = 2k + 1.\n3. Therefore, their sum is a + b = (2k + 1) + (2k + 1).\n4. By rearranging the terms, we get a + b = 4k + 2 = 2(2k + 1).\n5. Since 2k + 1 is an integer, we conclude that a + b is even.\n",
+    "flagged_steps": []
+  },
+  "root_causes": [
+    "sorry_L68"
+  ],
+  "blocked_descendants": 3,
+  "classifications": [
+    {
+      "sorry_id": "sorry_L68",
+      "line": 68,
+      "goal": "a b : ℤ\nha : ∃ m, a = 2 * m + 1\nhb : ∃ n, b = 2 * n + 1\n⊢ ∃ k, a = 2 * k + 1 ∧ b = 2 * k + 1",
+      "type": "A1",
+      "confidence": 1.0,
+      "reasoning": "The Lean goal faithfully matches the original Step 2: it asks for a single shared integer k such that both a = 2k + 1 and b = 2k + 1. That statement is false in general, even when both a and b are odd. The assumptions only give possibly different witnesses m and n for a and b being odd; they do not imply one common witness. So this is not merely bad reasoning toward a true claim—the subgoal itself is false. [Structure: root sorry — error is foundational, confidence boosted.] [Structure: 3 downstream steps blocked — high impact error.]\n\n[Verifier] Counterexample: Take a = 1 and b = 3. Then ha holds with m = 0 since 1 = 2*0 + 1, and hb holds with n = 1 since 3 = 2*1 + 1. But the goal would require some k such that 1 = 2*k + 1 and 3 = 2*k + 1 simultaneously, which forces 1 = 3, impossible.",
+      "blocked_by": [],
+      "salvageable": false,
+      "counterexample": "Take a = 1 and b = 3. Then ha holds with m = 0 since 1 = 2*0 + 1, and hb holds with n = 1 since 3 = 2*1 + 1. But the goal would require some k such that 1 = 2*k + 1 and 3 = 2*k + 1 simultaneously, which forces 1 = 3, impossible.",
+      "risk_score": 0.0
+    },
+    {
+      "sorry_id": "sorry_L76",
+      "line": 76,
+      "goal": "a b : ℤ\nha : ∃ m, a = 2 * m + 1\nhb : ∃ n, b = 2 * n + 1\nk : ℤ\nhak : a = 2 * k + 1\nhbk : b = 2 * k + 1\n⊢ a + b = 2 * k + 1 + (2 * k + 1)",
+      "type": "G",
+      "confidence": 0.9,
+      "reasoning": "This sorry depends on upstream sorry(s) ['sorry_L68']. It cannot be independently classified until root causes are resolved.",
+      "blocked_by": [
+        "sorry_L68"
+      ],
+      "salvageable": false,
+      "counterexample": null,
+      "risk_score": 0.17
+    },
+    {
+      "sorry_id": "sorry_L82",
+      "line": 82,
+      "goal": "a b : ℤ\nha : ∃ m, a = 2 * m + 1\nhb : ∃ n, b = 2 * n + 1\nk : ℤ\nhak : a = 2 * k + 1\nhbk : b = 2 * k + 1\nhsum1 : a + b = 2 * k + 1 + (2 * k + 1)\n⊢ a + b = 4 * k + 2 ∧ 4 * k + 2 = 2 * (2 * k + 1)",
+      "type": "G",
+      "confidence": 0.9,
+      "reasoning": "This sorry depends on upstream sorry(s) ['sorry_L76']. It cannot be independently classified until root causes are resolved.",
+      "blocked_by": [
+        "sorry_L76"
+      ],
+      "salvageable": false,
+      "counterexample": null,
+      "risk_score": 0.107
+    },
+    {
+      "sorry_id": "sorry_L88",
+      "line": 88,
+      "goal": "a b : ℤ\nha : ∃ m, a = 2 * m + 1\nhb : ∃ n, b = 2 * n + 1\nk : ℤ\nhak : a = 2 * k + 1\nhbk : b = 2 * k + 1\nhsum1 : a + b = 2 * k + 1 + (2 * k + 1)\nhsum2 : a + b = 4 * k + 2 ∧ 4 * k + 2 = 2 * (2 * k + 1)\n⊢ ∃ t, a + b = 2 * t",
+      "type": "G",
+      "confidence": 0.9,
+      "reasoning": "This sorry depends on upstream sorry(s) ['sorry_L76', 'sorry_L82']. It cannot be independently classified until root causes are resolved.",
+      "blocked_by": [
+        "sorry_L76",
+        "sorry_L82"
+      ],
+      "salvageable": false,
+      "counterexample": null,
+      "risk_score": 0.05
+    }
+  ],
+  "cost": {
+    "total_calls": 13,
+    "total_input_tokens": 35972,
+    "total_output_tokens": 72458,
+    "total_latency_s": 1325.7,
+    "per_round": {
+      "R1_translation": {
+        "calls": 1,
+        "input_tokens": 2872,
+        "output_tokens": 12521,
+        "latency_ms": 227211.59315109253
+      },
+      "R1.5_backtranslation_0": {
+        "calls": 2,
+        "input_tokens": 4591,
+        "output_tokens": 6502,
+        "latency_ms": 121146.5699672699
+      },
+      "R1_retry_1": {
+        "calls": 1,
+        "input_tokens": 3057,
+        "output_tokens": 11145,
+        "latency_ms": 203280.90596199036
+      },
+      "R1.5_backtranslation_1": {
+        "calls": 2,
+        "input_tokens": 4617,
+        "output_tokens": 5447,
+        "latency_ms": 100653.88512611389
+      },
+      "R1_retry_2": {
+        "calls": 1,
+        "input_tokens": 3057,
+        "output_tokens": 12972,
+        "latency_ms": 234834.17010307312
+      },
+      "R1.5_backtranslation_2": {
+        "calls": 2,
+        "input_tokens": 4721,
+        "output_tokens": 9038,
+        "latency_ms": 165770.55644989014
+      },
+      "R2.5_graph_analysis": {
+        "calls": 1,
+        "input_tokens": 3980,
+        "output_tokens": 3482,
+        "latency_ms": 64290.12703895569
+      },
+      "R3_classification": {
+        "calls": 1,
+        "input_tokens": 3524,
+        "output_tokens": 750,
+        "latency_ms": 15192.664861679077
+      },
+      "R4_verification": {
+        "calls": 1,
+        "input_tokens": 1810,
+        "output_tokens": 2167,
+        "latency_ms": 40101.73296928406
+      },
+      "R6_adjudication": {
+        "calls": 1,
+        "input_tokens": 3743,
+        "output_tokens": 8434,
+        "latency_ms": 153176.09691619873
+      }
+    }
+  },
+  "proof_graph": {
+    "nodes": [
+      {
+        "sorry_id": "sorry_L68",
+        "line": 68,
+        "depth": 0,
+        "impact_score": 3,
+        "is_root": true,
+        "is_leaf": false,
+        "is_on_critical_path": true,
+        "independent_group": 0
+      },
+      {
+        "sorry_id": "sorry_L76",
+        "line": 76,
+        "depth": 1,
+        "impact_score": 2,
+        "is_root": false,
+        "is_leaf": false,
+        "is_on_critical_path": true,
+        "independent_group": 0
+      },
+      {
+        "sorry_id": "sorry_L82",
+        "line": 82,
+        "depth": 2,
+        "impact_score": 1,
+        "is_root": false,
+        "is_leaf": false,
+        "is_on_critical_path": true,
+        "independent_group": 0
+      },
+      {
+        "sorry_id": "sorry_L88",
+        "line": 88,
+        "depth": 3,
+        "impact_score": 0,
+        "is_root": false,
+        "is_leaf": true,
+        "is_on_critical_path": true,
+        "independent_group": 0
+      }
+    ],
+    "edges": [
+      {
+        "from": "sorry_L76",
+        "to": "sorry_L82",
+        "type": "data_flow",
+        "confidence": 0.9,
+        "source": "static",
+        "explanation": "Goal references hypothesis 'hsum1' from sorry_L76"
+      },
+      {
+        "from": "sorry_L76",
+        "to": "sorry_L88",
+        "type": "data_flow",
+        "confidence": 0.9,
+        "source": "static",
+        "explanation": "Goal references hypothesis 'hsum1' from sorry_L76"
+      },
+      {
+        "from": "sorry_L82",
+        "to": "sorry_L88",
+        "type": "data_flow",
+        "confidence": 0.9,
+        "source": "static",
+        "explanation": "Goal references hypothesis 'hsum2' from sorry_L82"
+      },
+      {
+        "from": "sorry_L68",
+        "to": "sorry_L76",
+        "type": "data_flow",
+        "confidence": 0.99,
+        "source": "ai",
+        "explanation": "sorry_L76 rewrites a + b using the same witness k and the equalities a = 2 * k + 1 and b = 2 * k + 1 produced by sorry_L68."
+      }
+    ],
+    "topo_order": [
+      "sorry_L68",
+      "sorry_L76",
+      "sorry_L82",
+      "sorry_L88"
+    ],
+    "critical_path": [
+      "sorry_L68",
+      "sorry_L76",
+      "sorry_L82",
+      "sorry_L88"
+    ],
+    "independent_groups": [
+      [
+        "sorry_L68",
+        "sorry_L76",
+        "sorry_L82",
+        "sorry_L88"
+      ]
+    ],
+    "root_node_ids": [
+      "sorry_L68"
+    ]
+  },
+  "proof_structure": {
+    "theorem_name": "sum_of_two_odd_integers_is_even",
+    "theorem_statement": "∀ a b : ℤ, (∃ m : ℤ, a = 2 * m + 1) → (∃ n : ℤ, b = 2 * n + 1) → ∃ t : ℤ, a + b = 2 * t",
+    "proof_strategy": "induction",
+    "sorry_count": 4,
+    "max_depth": 1,
+    "steps": [
+      {
+        "name": "hk",
+        "type": "have",
+        "line": 67,
+        "depth": 1,
+        "has_sorry": true,
+        "sorry_id": "step2",
+        "claimed_reason": "By definition of odd integers",
+        "references": [],
+        "introduces": [
+          "hk"
+        ]
+      },
+      {
+        "name": "hsum1",
+        "type": "have",
+        "line": 75,
+        "depth": 1,
+        "has_sorry": true,
+        "sorry_id": "step3",
+        "claimed_reason": "Therefore",
+        "references": [],
+        "introduces": [
+          "hsum1"
+        ]
+      },
+      {
+        "name": "hsum2",
+        "type": "have",
+        "line": 81,
+        "depth": 1,
+        "has_sorry": true,
+        "sorry_id": "step4",
+        "claimed_reason": "By rearranging the terms",
+        "references": [],
+        "introduces": [
+          "hsum2"
+        ]
+      },
+      {
+        "name": "heven",
+        "type": "have",
+        "line": 87,
+        "depth": 1,
+        "has_sorry": true,
+        "sorry_id": "step5",
+        "claimed_reason": "Since 2k + 1 is an integer",
+        "references": [],
+        "introduces": [
+          "heven"
+        ]
+      }
+    ],
+    "edges": [
+      {
+        "from": "hk",
+        "to": "hsum1",
+        "type": "sequential",
+        "evidence": "hsum1 follows hk in proof order"
+      },
+      {
+        "from": "hsum1",
+        "to": "hsum2",
+        "type": "sequential",
+        "evidence": "hsum2 follows hsum1 in proof order"
+      },
+      {
+        "from": "hsum2",
+        "to": "heven",
+        "type": "sequential",
+        "evidence": "heven follows hsum2 in proof order"
+      }
+    ],
+    "root_steps": [
+      "hk"
+    ],
+    "leaf_steps": [
+      "heven"
+    ],
+    "critical_chain": [
+      "hk",
+      "hsum1",
+      "hsum2",
+      "heven"
+    ]
+  }
+}

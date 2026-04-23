@@ -1,124 +1,336 @@
 {
   "proof_title": "buggy_proof",
-  "verdict": "TRANSLATION_ISSUES",
-  "total_sorrys": 8,
-  "back_translation": {
-    "mode": "auto",
-    "fidelity_score": 0.37,
-    "overall_match": false,
-    "flagged_steps": [
-      {
-        "step_id": 2,
-        "discrepancy": "Original uses one shared witness k for both odd numbers, which would force a = b. Back-translation uses two possibly different witnesses k and l, which is the standard oddness expansion.",
-        "confidence": 1.0
-      },
-      {
-        "step_id": 3,
-        "discrepancy": "Original substitutes the same witness into both summands; back-translation substitutes different witnesses for a and b.",
-        "confidence": 0.99
-      },
-      {
-        "step_id": 4,
-        "discrepancy": "These are not the same algebraic claim. Original derives a formula depending on one witness k; back-translation derives a formula depending on both k and l. They coincide only in the special case k = l.",
-        "confidence": 0.98
-      },
-      {
-        "step_id": 5,
-        "discrepancy": "Both end with the evenness of a + b, but the original justifies it using the specific witness 2k + 1, while the back-translation only asserts Even(a + b) and, from its prior algebra, the natural witness would be k + l + 1 instead.",
-        "confidence": 0.86
-      }
-    ]
+  "diagnostician_verdict": "ERROR_DETECTED",
+  "final_verdict": "ERROR_DETECTED",
+  "adjudicator_confidence": 0.5,
+  "total_sorrys": 4,
+  "adjudication": {
+    "final_verdict": "ERROR_DETECTED",
+    "confidence": 0.5,
+    "has_overrides": false,
+    "overrides": [],
+    "narrative": {
+      "diagnosis": "Unable to parse adjudication narrative.",
+      "fix_suggestion": "",
+      "impact_assessment": ""
+    }
   },
-  "root_causes": [],
-  "blocked_descendants": 0,
+  "back_translation": {
+    "mode": "web",
+    "fidelity_score": 0.8566666666666667,
+    "overall_match": true,
+    "translation_attempts": 1,
+    "persistent_low_fidelity": false,
+    "back_translated_text": "```text\nTheorem. For integers \\(a\\) and \\(b\\), if \\(a\\) and \\(b\\) are odd, then \\(a+b\\) is even.\n\nProof. Let \\(a\\) and \\(b\\) be two odd integers.\n\nBy definition of odd integers, there exists an integer \\(k\\) such that\n\\[\na=2k+1 \\quad \\text{and} \\quad b=2k+1.\n\\]\n\nTherefore, their sum is\n\\[\na+b=(2k+1)+(2k+1).\n\\]\n\nBy rearranging the terms, we get\n\\[\na+b=4k+2\n\\]\nand\n\\[\n4k+2=2(2k+1).\n\\]\n\nSince \\(2k+1\\) is an integer, we conclude that \\(a+b\\) is even. ∎\n```",
+    "original_proof": "Theorem: The sum of two odd integers is even.\n\nProof:\n1. Let a and b be two odd integers.\n2. By definition of odd integers, there exists an integer k such that a = 2k + 1 and b = 2k + 1.\n3. Therefore, their sum is a + b = (2k + 1) + (2k + 1).\n4. By rearranging the terms, we get a + b = 4k + 2 = 2(2k + 1).\n5. Since 2k + 1 is an integer, we conclude that a + b is even.\n",
+    "flagged_steps": []
+  },
+  "root_causes": [
+    "sorry_L53"
+  ],
+  "blocked_descendants": 3,
   "classifications": [
     {
-      "sorry_id": "sorry_L19",
-      "line": 19,
-      "goal": "a b : ℤ\nha : Odd a\nhb : Odd b\n⊢ ∃ k l, a = 2 * k + 1 ∧ b = 2 * l + 1",
-      "type": "B",
-      "confidence": 0.98,
-      "reasoning": "The Lean goal is `∃ k l, a = 2 * k + 1 ∧ b = 2 * l + 1`, which is the correct formal consequence of `ha : Odd a` and `hb : Odd b` and is easily solvable in Mathlib. However, the original Step 2 claimed a different statement: that there exists a single integer `k` such that both `a = 2k + 1` and `b = 2k + 1`. The translator changed the mathematics by replacing one witness with two separate witnesses. So this sorry gap is best classified as a mistranslation of the original step, not merely a missing lemma or hard Lean encoding.",
+      "sorry_id": "sorry_L53",
+      "line": 53,
+      "goal": "a b : ℤ\nha : Odd a\nhb : Odd b\n⊢ ∃ k, a = 2 * k + 1 ∧ b = 2 * k + 1",
+      "type": "A1",
+      "confidence": 1.0,
+      "reasoning": "The Lean goal faithfully matches the original Step 2: it asks for one shared integer k such that a = 2*k + 1 and b = 2*k + 1. But from ha : Odd a and hb : Odd b, the definition of odd only yields separate witnesses in general, not a single common one. In fact the goal implies a = b, so it is false for many odd pairs. Thus this is not merely bad reasoning toward a true claim; the instantiated goal itself is false. [Structure: root sorry — error is foundational, confidence boosted.] [Structure: 3 downstream steps blocked — high impact error.]\n\n[Verifier] Counterexample: Take a = 1 and b = 3. Both are odd, but if there were k with a = 2*k + 1 and b = 2*k + 1, then we would have 1 = 2*k + 1 and 3 = 2*k + 1, hence 1 = 3, impossible.",
       "blocked_by": [],
       "salvageable": false,
-      "counterexample": "Original Step 2 is false in general: let a = 1 and b = 3. Both are odd, but there is no single integer k with 1 = 2k + 1 and 3 = 2k + 1 simultaneously."
+      "counterexample": "Take a = 1 and b = 3. Both are odd, but if there were k with a = 2*k + 1 and b = 2*k + 1, then we would have 1 = 2*k + 1 and 3 = 2*k + 1, hence 1 = 3, impossible.",
+      "risk_score": 0.0
     },
     {
-      "sorry_id": "sorry_L26",
-      "line": 26,
-      "goal": "a b : ℤ\nha : Odd a\nhb : Odd b\nk l : ℤ\nhk : a = 2 * k + 1\nhl : b = 2 * l + 1\n⊢ a + b = 2 * k + 1 + (2 * l + 1)",
-      "type": "D",
-      "confidence": 0.99,
-      "reasoning": "The goal is correct and directly follows by substituting the hypotheses hk : a = 2 * k + 1 and hl : b = 2 * l + 1 into a + b. This matches the original proof's reasoning for Step 3 ('therefore, their sum is ...'). In Lean, a simple rw [hk, hl] (or equivalent arithmetic normalization) solves it.",
-      "blocked_by": [],
+      "sorry_id": "sorry_L61",
+      "line": 61,
+      "goal": "a b : ℤ\nha : Odd a\nhb : Odd b\nk : ℤ\nhak : a = 2 * k + 1\nhbk : b = 2 * k + 1\n⊢ a + b = 2 * k + 1 + (2 * k + 1)",
+      "type": "G",
+      "confidence": 0.9,
+      "reasoning": "This sorry depends on upstream sorry(s) ['sorry_L53']. It cannot be independently classified until root causes are resolved.",
+      "blocked_by": [
+        "sorry_L53"
+      ],
       "salvageable": false,
-      "counterexample": null
+      "counterexample": null,
+      "risk_score": 0.175
     },
     {
-      "sorry_id": "sorry_L33",
-      "line": 33,
-      "goal": "a b : ℤ\nha : Odd a\nhb : Odd b\nk l : ℤ\nhk : a = 2 * k + 1\nhl : b = 2 * l + 1\nhsum : a + b = 2 * k + 1 + (2 * l + 1)\n⊢ a + b = 2 * (k + l + 1)",
-      "type": "D",
-      "confidence": 0.96,
-      "reasoning": "The goal is a straightforward arithmetic rearrangement of `hsum : a + b = (2 * k + 1) + (2 * l + 1)` into `a + b = 2 * (k + l + 1)`. This matches the claimed justification 'by rearranging the terms.' The goal is solvable by standard tactics like `omega` or `norm_num`, so the gap is not due to false mathematics or missing library support, but simply that the appropriate tactic/lemma was not used.",
-      "blocked_by": [],
+      "sorry_id": "sorry_L67",
+      "line": 67,
+      "goal": "a b : ℤ\nha : Odd a\nhb : Odd b\nk : ℤ\nhak : a = 2 * k + 1\nhbk : b = 2 * k + 1\nhsum1 : a + b = 2 * k + 1 + (2 * k + 1)\n⊢ a + b = 4 * k + 2 ∧ 4 * k + 2 = 2 * (2 * k + 1)",
+      "type": "G",
+      "confidence": 0.9,
+      "reasoning": "This sorry depends on upstream sorry(s) ['sorry_L61']. It cannot be independently classified until root causes are resolved.",
+      "blocked_by": [
+        "sorry_L61"
+      ],
       "salvageable": false,
-      "counterexample": null
+      "counterexample": null,
+      "risk_score": 0.108
     },
     {
-      "sorry_id": "sorry_L40",
-      "line": 40,
-      "goal": "a b : ℤ\nha : Odd a\nhb : Odd b\nk l : ℤ\nhk : a = 2 * k + 1\nhl : b = 2 * l + 1\nhsum : a + b = 2 * k + 1 + (2 * l + 1)\nhrewrite : a + b = 2 * (k + l + 1)\n⊢ Even (a + b)",
-      "type": "D",
-      "confidence": 0.98,
-      "reasoning": "This gap is straightforwardly solvable with existing Mathlib lemmas: `exact Odd.add_odd ha hb` proves `Even (a + b)` immediately. Moreover, the original intended reasoning is also valid: from `hrewrite : a + b = 2 * (k + l + 1)`, one can conclude `Even (a + b)` by using the witness `k + l + 1`. So the mathematics is correct and the needed lemma/fact is available; it simply wasn't used.",
-      "blocked_by": [],
+      "sorry_id": "sorry_L73",
+      "line": 73,
+      "goal": "a b : ℤ\nha : Odd a\nhb : Odd b\nk : ℤ\nhak : a = 2 * k + 1\nhbk : b = 2 * k + 1\nhsum1 : a + b = 2 * k + 1 + (2 * k + 1)\nhsum2 : a + b = 4 * k + 2 ∧ 4 * k + 2 = 2 * (2 * k + 1)\n⊢ Even (a + b)",
+      "type": "G",
+      "confidence": 0.9,
+      "reasoning": "This sorry depends on upstream sorry(s) ['sorry_L61', 'sorry_L67', 'sorry_L53']. It cannot be independently classified until root causes are resolved.",
+      "blocked_by": [
+        "sorry_L61",
+        "sorry_L67",
+        "sorry_L53"
+      ],
       "salvageable": false,
-      "counterexample": null
-    },
-    {
-      "sorry_id": "sorry_L55",
-      "line": 55,
-      "goal": "no goals",
-      "type": "D",
-      "confidence": 0.99,
-      "reasoning": "This is not a real proof gap. Line 55 is inside the commented `translation_map.yaml` block, where the word `sorry` appears as plain text in `lean_location`. The reported Lean state `no goals` confirms there is nothing to prove at this location.",
-      "blocked_by": [],
-      "salvageable": false,
-      "counterexample": null
-    },
-    {
-      "sorry_id": "sorry_L60",
-      "line": 60,
-      "goal": "no goals",
-      "type": "B",
-      "confidence": 0.91,
-      "reasoning": "The reported line is in the commented translation_map, so there is no actual Lean goal there. Interpreting the intended gap as `step3_sum`, the Lean statement uses separate witnesses `k` and `l`: `a + b = (2*k + 1) + (2*l + 1)`. That is easy to prove by rewriting, but it does not match the original proof step, which incorrectly used the same `k` for both odd integers. So the issue is a translation mismatch: the Lean proof repairs the mathematics instead of faithfully formalizing the original step.",
-      "blocked_by": [],
-      "salvageable": false,
-      "counterexample": "For a = 1 and b = 3, both are odd, but there is no single integer k such that 1 = 2k + 1 and 3 = 2k + 1."
-    },
-    {
-      "sorry_id": "sorry_L65",
-      "line": 65,
-      "goal": "no goals",
-      "type": "B",
-      "confidence": 0.8,
-      "reasoning": "Line 65 is not an actual proof obligation: it is inside the commented `translation_map.yaml` block (`lean_location: \"... := by sorry\"`). That is why the goal state is `no goals`. So the reported 'sorry gap' does not faithfully correspond to a Lean theorem step at all; it is a reporting/translation mismatch. If mapped back to the intended real step (`step4_rearrange`), that step is just routine arithmetic, but the line cited here is not a genuine gap.",
-      "blocked_by": [],
-      "salvageable": false,
-      "counterexample": null
-    },
-    {
-      "sorry_id": "sorry_L70",
-      "line": 70,
-      "goal": "no goals",
-      "type": "B",
-      "confidence": 0.72,
-      "reasoning": "The reported 'sorry' at line 70 is not an actual proof hole in the Lean theorem body; it is the word 'sorry' appearing inside the commented `translation_map.yaml` block (`lean_location: ... by sorry`). This is why the goal state is `no goals`. So the identified gap does not correspond to the original mathematical step at all; it is a mismatch/extraction issue rather than a real proof obligation.",
-      "blocked_by": [],
-      "salvageable": false,
-      "counterexample": null
+      "counterexample": null,
+      "risk_score": 0.05
     }
-  ]
+  ],
+  "cost": {
+    "total_calls": 7,
+    "total_input_tokens": 19708,
+    "total_output_tokens": 24435,
+    "total_latency_s": 455.6,
+    "per_round": {
+      "R1_translation": {
+        "calls": 1,
+        "input_tokens": 2872,
+        "output_tokens": 8482,
+        "latency_ms": 156706.18200302124
+      },
+      "R1.5_backtranslation_0": {
+        "calls": 2,
+        "input_tokens": 4590,
+        "output_tokens": 1573,
+        "latency_ms": 33506.237745285034
+      },
+      "R2.5_graph_analysis": {
+        "calls": 1,
+        "input_tokens": 3748,
+        "output_tokens": 4001,
+        "latency_ms": 75157.79399871826
+      },
+      "R3_classification": {
+        "calls": 1,
+        "input_tokens": 3265,
+        "output_tokens": 745,
+        "latency_ms": 14475.90708732605
+      },
+      "R4_verification": {
+        "calls": 1,
+        "input_tokens": 1788,
+        "output_tokens": 1550,
+        "latency_ms": 29203.07469367981
+      },
+      "R6_adjudication": {
+        "calls": 1,
+        "input_tokens": 3445,
+        "output_tokens": 8084,
+        "latency_ms": 146568.88699531555
+      }
+    }
+  },
+  "proof_graph": {
+    "nodes": [
+      {
+        "sorry_id": "sorry_L53",
+        "line": 53,
+        "depth": 0,
+        "impact_score": 3,
+        "is_root": true,
+        "is_leaf": false,
+        "is_on_critical_path": true,
+        "independent_group": 0
+      },
+      {
+        "sorry_id": "sorry_L61",
+        "line": 61,
+        "depth": 1,
+        "impact_score": 2,
+        "is_root": false,
+        "is_leaf": false,
+        "is_on_critical_path": true,
+        "independent_group": 0
+      },
+      {
+        "sorry_id": "sorry_L67",
+        "line": 67,
+        "depth": 2,
+        "impact_score": 1,
+        "is_root": false,
+        "is_leaf": false,
+        "is_on_critical_path": true,
+        "independent_group": 0
+      },
+      {
+        "sorry_id": "sorry_L73",
+        "line": 73,
+        "depth": 3,
+        "impact_score": 0,
+        "is_root": false,
+        "is_leaf": true,
+        "is_on_critical_path": true,
+        "independent_group": 0
+      }
+    ],
+    "edges": [
+      {
+        "from": "sorry_L61",
+        "to": "sorry_L67",
+        "type": "data_flow",
+        "confidence": 0.9,
+        "source": "static",
+        "explanation": "Goal references hypothesis 'hsum1' from sorry_L61"
+      },
+      {
+        "from": "sorry_L61",
+        "to": "sorry_L73",
+        "type": "data_flow",
+        "confidence": 0.9,
+        "source": "static",
+        "explanation": "Goal references hypothesis 'hsum1' from sorry_L61"
+      },
+      {
+        "from": "sorry_L67",
+        "to": "sorry_L73",
+        "type": "data_flow",
+        "confidence": 0.9,
+        "source": "static",
+        "explanation": "Goal references hypothesis 'hsum2' from sorry_L67"
+      },
+      {
+        "from": "sorry_L53",
+        "to": "sorry_L61",
+        "type": "data_flow",
+        "confidence": 0.99,
+        "source": "ai",
+        "explanation": "Step 3 uses the witness k and the equalities a = 2*k + 1 and b = 2*k + 1 produced in Step 2 to substitute into a + b."
+      },
+      {
+        "from": "sorry_L53",
+        "to": "sorry_L73",
+        "type": "logical_prerequisite",
+        "confidence": 0.74,
+        "source": "ai",
+        "explanation": "Step 5 concludes evenness using 2*k + 1 as the integer witness. The fact that this expression is an integer comes from Step 2's choice of an integer k, so Step 5 depends directly on Step 2 in addition to the displayed equality from Step 4."
+      }
+    ],
+    "topo_order": [
+      "sorry_L53",
+      "sorry_L61",
+      "sorry_L67",
+      "sorry_L73"
+    ],
+    "critical_path": [
+      "sorry_L53",
+      "sorry_L61",
+      "sorry_L67",
+      "sorry_L73"
+    ],
+    "independent_groups": [
+      [
+        "sorry_L53",
+        "sorry_L61",
+        "sorry_L67",
+        "sorry_L73"
+      ]
+    ],
+    "root_node_ids": [
+      "sorry_L53"
+    ]
+  },
+  "proof_structure": {
+    "theorem_name": "",
+    "theorem_statement": "",
+    "proof_strategy": "induction",
+    "sorry_count": 4,
+    "max_depth": 1,
+    "steps": [
+      {
+        "name": "hk",
+        "type": "have",
+        "line": 52,
+        "depth": 1,
+        "has_sorry": true,
+        "sorry_id": "step2_shared_k",
+        "claimed_reason": "definition of odd integers",
+        "references": [],
+        "introduces": [
+          "hk"
+        ]
+      },
+      {
+        "name": "hsum1",
+        "type": "have",
+        "line": 60,
+        "depth": 1,
+        "has_sorry": true,
+        "sorry_id": "step3_sum_substitution",
+        "claimed_reason": "Therefore",
+        "references": [],
+        "introduces": [
+          "hsum1"
+        ]
+      },
+      {
+        "name": "hsum2",
+        "type": "have",
+        "line": 66,
+        "depth": 1,
+        "has_sorry": true,
+        "sorry_id": "step4_rearrangement",
+        "claimed_reason": "rearranging the terms",
+        "references": [],
+        "introduces": [
+          "hsum2"
+        ]
+      },
+      {
+        "name": "h_even",
+        "type": "have",
+        "line": 72,
+        "depth": 1,
+        "has_sorry": true,
+        "sorry_id": "step5_even_conclusion",
+        "claimed_reason": "Since 2k + 1 is an integer",
+        "references": [],
+        "introduces": [
+          "h_even"
+        ]
+      }
+    ],
+    "edges": [
+      {
+        "from": "hk",
+        "to": "hsum1",
+        "type": "sequential",
+        "evidence": "hsum1 follows hk in proof order"
+      },
+      {
+        "from": "hsum1",
+        "to": "hsum2",
+        "type": "sequential",
+        "evidence": "hsum2 follows hsum1 in proof order"
+      },
+      {
+        "from": "hsum2",
+        "to": "h_even",
+        "type": "sequential",
+        "evidence": "h_even follows hsum2 in proof order"
+      }
+    ],
+    "root_steps": [
+      "hk"
+    ],
+    "leaf_steps": [
+      "h_even"
+    ],
+    "critical_chain": [
+      "hk",
+      "hsum1",
+      "hsum2",
+      "h_even"
+    ]
+  }
 }

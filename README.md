@@ -7,7 +7,10 @@ Proof Auditor translates informal mathematical proofs into Lean 4, then classifi
 ## How It Works
 
 ```
-Mathematical Proof (LaTeX / PDF)
+Mathematical Proof (LaTeX / PDF / plain text)
+        │
+        ▼  [PDF Extractor / LaTeX Parser]
+Structured Proof Text
         │
         ▼  [Translator Agent]
 Lean 4 Formalization (with sorry gaps)
@@ -85,8 +88,20 @@ cd proof-auditor
 # Install dependencies
 pip install -e .
 
-# Run audit on a proof
-python -m core.loop --input examples/proof.tex --output report.json
+# Audit a plain text proof
+python -m core.loop --input examples/proof.txt --output report.json
+
+# Audit a PDF file (auto-extracts theorems, zero API cost)
+PYTHONPATH=. python scripts/audit.py paper.pdf --mode off
+
+# Audit a specific theorem from a PDF
+PYTHONPATH=. python scripts/audit.py paper.pdf --theorem "4.1" --mode auto
+
+# Audit a scanned/image PDF (uses AI vision, costs API credits)
+PYTHONPATH=. python scripts/audit.py scanned.pdf --backend vision --mode auto
+
+# Audit a specific page range
+PYTHONPATH=. python scripts/audit.py paper.pdf --pages 3-5,8 --mode auto
 ```
 
 ## Key Design Decisions

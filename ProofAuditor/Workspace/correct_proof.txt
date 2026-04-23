@@ -1,0 +1,8 @@
+Theorem: The sum of two odd integers is even.
+
+Proof:
+1. Let a and b be two odd integers.
+2. By definition of odd integers, there exist integers k and j such that a = 2k + 1 and b = 2j + 1.
+3. Therefore, their sum is a + b = (2k + 1) + (2j + 1).
+4. By rearranging the terms, we get a + b = 2k + 2j + 2 = 2(k + j + 1).
+5. Since k + j + 1 is an integer, we conclude that a + b is even.

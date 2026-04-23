@@ -1,24 +1,50 @@
 {
-  "buggy_proof": {
-    "description": "Uses one shared k for two odd numbers (forces a=b)",
-    "expected_types": {
-      "must_contain": ["A1"],
-      "may_contain": ["A2", "D", "E"],
-      "must_not_contain": ["C"]
+  "phase0": {
+    "buggy_proof": {
+      "description": "Uses one shared k for two odd numbers (forces a=b)",
+      "expected_types": {
+        "must_contain": ["A"],
+        "may_contain": ["C", "E"],
+        "must_not_contain": []
+      },
+      "expected_verdict": "VERIFIED_ERROR",
+      "fidelity_should_be_low_if_fixed": true,
+      "notes": "If translator fixes the bug (introduces k,l), fidelity should drop. Type A requires Lean-verified counterexample."
     },
-    "expected_verdict": "ERROR_DETECTED",
-    "fidelity_should_be_low_if_fixed": true,
-    "notes": "If translator fixes the bug (introduces k,l), fidelity should drop and B should appear."
+    "correct_proof": {
+      "description": "Valid proof that sum of two odd integers is even",
+      "expected_types": {
+        "must_contain": [],
+        "may_contain": ["B", "D", "E"],
+        "must_not_contain": ["A"]
+      },
+      "expected_verdict": "VERIFIED_CORRECT",
+      "fidelity_should_be_low_if_fixed": false,
+      "notes": "Should have high fidelity and no Type A errors. All gaps should be Type B (auto-resolved) or Type D (Lean limitation)."
+    }
   },
-  "correct_proof": {
-    "description": "Valid proof that sum of two odd integers is even",
-    "expected_types": {
-      "must_contain": [],
-      "may_contain": ["D", "E"],
-      "must_not_contain": ["A1", "A2"]
+  "phase1": {
+    "buggy_proof": {
+      "description": "Delta Method variance error: uses g'(1) instead of [g'(1)]^2, gets N(0,e) then hand-waves to N(0,e^2)",
+      "expected_types": {
+        "must_contain": ["A"],
+        "may_contain": ["C", "D", "E"],
+        "must_not_contain": []
+      },
+      "expected_verdict": "VERIFIED_ERROR",
+      "fidelity_should_be_low_if_fixed": true,
+      "notes": "The bug is in step 6-7: Delta Method gives variance [g'(mu)]^2 * sigma^2, not g'(mu) * sigma^2. The hand-wave in step 7 is a non-sequitur attempting to cover the error. Type A should flag the incorrect variance computation. Expect Type C/D gaps for CLT and Delta Method formalization in Lean."
     },
-    "expected_verdict": "VERIFIED",
-    "fidelity_should_be_low_if_fixed": false,
-    "notes": "Should have high fidelity and no A-type errors."
+    "correct_proof": {
+      "description": "Valid proof: product of i.i.d. Uniform[0,1] via log-transform, CLT, and Delta Method",
+      "expected_types": {
+        "must_contain": [],
+        "may_contain": ["B", "C", "D", "E"],
+        "must_not_contain": ["A"]
+      },
+      "expected_verdict": "VERIFIED_CORRECT",
+      "fidelity_should_be_low_if_fixed": false,
+      "notes": "Multi-step probability proof: log-transform -> Exp(1) -> CLT -> Delta Method. Should have high fidelity. Expect Type C (Mathlib gaps for CLT/Delta Method) and Type D (measure-theoretic API) sorry gaps, but NO Type A logical errors."
+    }
   }
 }

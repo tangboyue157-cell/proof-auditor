@@ -19,21 +19,46 @@ REPORTS_DIR = ROOT_DIR / "reports"
 
 
 def load_expected() -> dict:
-    """Load expected results."""
+    """Load expected results.
+
+    Supports both flat format {proof_name: {...}} and
+    phase-grouped format {phase: {proof_name: {...}}}.
+    Returns a flat dict with phase-qualified keys like 'phase0/buggy_proof'.
+    """
     if not EXPECTED_FILE.exists():
         print(f"❌ Expected results file not found: {EXPECTED_FILE}")
         sys.exit(1)
-    return json.loads(EXPECTED_FILE.read_text())
+    raw = json.loads(EXPECTED_FILE.read_text())
+    # Flatten phase-grouped structure into a single dict with qualified keys
+    flat = {}
+    for key, value in raw.items():
+        if isinstance(value, dict) and all(isinstance(v, dict) for v in value.values()):
+            sample = next(iter(value.values()), {})
+            if "expected_verdict" in sample or "expected_types" in sample:
+                # Phase group: qualify keys as "phase0/buggy_proof"
+                for proof_name, proof_exp in value.items():
+                    flat[f"{key}/{proof_name}"] = proof_exp
+            else:
+                flat[key] = value
+        else:
+            flat[key] = value
+    return flat
 
 
-def find_benchmark_proofs() -> list[Path]:
-    """Find all .txt benchmark proof files."""
+def find_benchmark_proofs() -> list[tuple[str, Path]]:
+    """Find all .txt benchmark proof files.
+
+    Returns list of (qualified_name, path) tuples.
+    e.g. ('phase0/buggy_proof', Path('benchmark/phase0/buggy_proof.txt'))
+    """
     proofs = []
     for phase_dir in sorted(BENCHMARK_DIR.iterdir()):
         if phase_dir.is_dir() and phase_dir.name.startswith("phase"):
-            proofs.extend(sorted(phase_dir.glob("*.txt")))
+            for p in sorted(phase_dir.glob("*.txt")):
+                proofs.append((f"{phase_dir.name}/{p.stem}", p))
     # Also check root benchmark dir
-    proofs.extend(sorted(BENCHMARK_DIR.glob("*.txt")))
+    for p in sorted(BENCHMARK_DIR.glob("*.txt")):
+        proofs.append((p.stem, p))
     return proofs
 
 
@@ -98,14 +123,14 @@ def run_benchmarks(quick: bool = False) -> None:
     total_passed = 0
     total_failed = 0
 
-    for proof_path in proofs:
-        proof_name = proof_path.stem
+    for proof_name, proof_path in proofs:
         print(f"\n{'─'*40}")
         print(f"  Testing: {proof_name}")
         print(f"{'─'*40}")
 
-        # Check if report exists
-        report_path = REPORTS_DIR / f"audit_{proof_name}.json"
+        # Check if report exists (use filesystem-safe name for report file)
+        report_stem = proof_name.replace("/", "_")
+        report_path = REPORTS_DIR / f"audit_{report_stem}.json"
         if not report_path.exists():
             print(f"  ⚠️  No report found. Run audit first:")
             mode = "off" if quick else "auto"

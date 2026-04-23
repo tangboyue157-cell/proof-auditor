@@ -1,0 +1,74 @@
+{
+  "proof_title": "web_audit_cdd8f3fa",
+  "verdict": "LIKELY_CORRECT",
+  "total_sorrys": 0,
+  "back_translation": {
+    "mode": "auto",
+    "fidelity_score": 0.89,
+    "overall_match": true,
+    "translation_attempts": 3,
+    "persistent_low_fidelity": false,
+    "flagged_steps": []
+  },
+  "root_causes": [],
+  "blocked_descendants": 0,
+  "classifications": [],
+  "cost": {
+    "total_calls": 10,
+    "total_input_tokens": 22449,
+    "total_output_tokens": 13307,
+    "total_latency_s": 285.1,
+    "per_round": {
+      "R1_translation": {
+        "calls": 1,
+        "input_tokens": 2763,
+        "output_tokens": 803,
+        "latency_ms": 20712.589740753174
+      },
+      "R1.5_backtranslation_0": {
+        "calls": 2,
+        "input_tokens": 3691,
+        "output_tokens": 1838,
+        "latency_ms": 36715.986013412476
+      },
+      "R1_retry_1": {
+        "calls": 1,
+        "input_tokens": 3067,
+        "output_tokens": 1970,
+        "latency_ms": 42635.945081710815
+      },
+      "R1.5_backtranslation_1": {
+        "calls": 2,
+        "input_tokens": 3692,
+        "output_tokens": 2233,
+        "latency_ms": 52008.43787193298
+      },
+      "R1_retry_2": {
+        "calls": 1,
+        "input_tokens": 3078,
+        "output_tokens": 3294,
+        "latency_ms": 60806.36715888977
+      },
+      "R1.5_backtranslation_2": {
+        "calls": 2,
+        "input_tokens": 3658,
+        "output_tokens": 3002,
+        "latency_ms": 61748.03829193115
+      },
+      "R2.5_graph_analysis": {
+        "calls": 1,
+        "input_tokens": 2500,
+        "output_tokens": 167,
+        "latency_ms": 10437.995910644531
+      }
+    }
+  },
+  "proof_graph": {
+    "nodes": [],
+    "edges": [],
+    "topo_order": [],
+    "critical_path": [],
+    "independent_groups": [],
+    "root_node_ids": []
+  }
+}

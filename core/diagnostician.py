@@ -1,11 +1,12 @@
-"""Diagnostician module v2 — with dependency analysis and corrected Verifier logic.
+"""Diagnostician module v4 — [0,1] verification score model.
 
-Key improvements over v1:
-  1. Sorry dependency graph: blocked_by / blocks tracking
-  2. A1/A2 distinction: false_claim vs invalid_justification
-  3. Verifier fix: alternative proof → salvageable, NOT downgrade A2
-  4. Blocked descendants: upstream contamination awareness
-  5. Fidelity-first: D/C/E only after fidelity=exact confirmed
+Key changes from v2/v3:
+  1. 5-type classification (A-E) replacing 8-type (A1-G)
+  2. Verification score s ∈ [0,1] for every classification
+  3. Tactic success → Type B (Verified, s=1.0), not old Type D
+  4. Blocked descendants → Type E (Indeterminate)
+  5. Translation errors handled at pipeline quality gate, not here
+  6. Verifier targets Type A (counterexample) and Type C (reasoning check)
 """
 
 import json
@@ -24,6 +25,7 @@ from core.classifier import (
     SorryClassification,
     SorryGap,
     SorryType,
+    Verdict,
     generate_report,
 )
 
@@ -106,15 +108,17 @@ def classify_sorry_with_ai(
     original_proof: str,
     lean_code: str,
     fidelity_score: Optional[float] = None,
+    reference_context: str = "",
 ) -> SorryClassification:
-    """Classify a single sorry using the Diagnostician Agent.
+    """Classify a single sorry using the Diagnostician Agent v4.
 
-    v2 changes:
-      - Blocked descendants get G classification directly
-      - Fidelity check before D/C/E
-      - A split into A1/A2
+    v4 changes:
+      - 5-type A-E classification with verification score
+      - Tactic success → Type B (Verified, s=1.0)
+      - Blocked descendants → Type E (Indeterminate)
+      - Translation errors handled at quality gate, not here
     """
-    # ── Fast path: blocked descendant ──
+    # ── Fast path: blocked descendant → Type E ──
     if sorry_data.get("is_blocked"):
         gap = SorryGap(
             sorry_id=f"sorry_L{sorry_data['line']}",
@@ -126,14 +130,62 @@ def classify_sorry_with_ai(
         axes = InternalAxes(provenance=ProvenanceStatus.BLOCKED_DESCENDANT)
         return SorryClassification(
             sorry=gap,
-            classification=SorryType.G_BLOCKED_DESCENDANT,
+            classification=SorryType.E_INDETERMINATE,
             confidence=0.9,
+            verification_score=0.5,
             reasoning=(
                 f"This sorry depends on upstream sorry(s) {sorry_data['blocked_by']}. "
                 "It cannot be independently classified until root causes are resolved."
             ),
             internal_axes=axes,
         )
+
+    # ── Fast path: tactic solved it → Type B (Verified, s=1.0) ──
+    tactic_results = sorry_data.get("tactic_results", [])
+    solved_tactics = [tr for tr in tactic_results if tr.get("success")]
+    if solved_tactics:
+        gap = SorryGap(
+            sorry_id=f"sorry_L{sorry_data['line']}",
+            file=sorry_data.get("file", ""),
+            line=sorry_data["line"],
+            lean_goal=sorry_data.get("goal", ""),
+        )
+        solved_by = ", ".join(tr["tactic"] for tr in solved_tactics)
+        axes = InternalAxes(mechanization=MechanizationStatus.API_FOUND)
+        return SorryClassification(
+            sorry=gap,
+            classification=SorryType.B_VERIFIED,
+            confidence=1.0,
+            verification_score=1.0,
+            reasoning=f"Auto-resolved by tactic(s): {solved_by}",
+            evidence={"tactic_results": tactic_results},
+            internal_axes=axes,
+        )
+
+    # ── Build structural context string for prompt ──
+    struct = sorry_data.get("structure", {})
+    structure_block = ""
+    if struct:
+        is_root = struct.get("is_root", False)
+        is_leaf = struct.get("is_leaf", False)
+        position = "ROOT" if is_root else ("LEAF" if is_leaf else "INTERMEDIATE")
+        depth = struct.get("depth", 0)
+        upstream = struct.get("upstream_count", 0)
+        downstream = struct.get("downstream_count", 0)
+        claimed = struct.get("claimed_reason", "")
+        step_name = struct.get("step_name", "")
+
+        structure_block = f"""
+## Structural Context (from R1+ static analysis)
+- Step name: {step_name}
+- Position in proof tree: **{position}**
+- Nesting depth: {depth}
+- Upstream dependencies: {upstream} steps
+- Downstream dependents: {downstream} steps blocked by this sorry
+- Claimed reasoning: "{claimed}"
+"""
+    else:
+        structure_block = "\n## Structural Context\nNo structural data available.\n"
 
     # ── AI classification ──
     system_prompt = _load_prompt("diagnostician")
@@ -157,31 +209,36 @@ def classify_sorry_with_ai(
 ## Sorry at Line {sorry_data['line']}
 Goal State:
 {sorry_data.get('goal', 'N/A')}
-
+{structure_block}
 ## Tactic Results
-{tactic_summary}
+{tactic_summary if tactic_summary else "No tactics attempted or all failed."}
 
 ## Classification Types (use these exact codes):
-- A1: Goal is provably FALSE (you can construct a counterexample)
-- A2: Goal may be true, but the original proof's REASONING for this step is invalid
-- B: The AI mistranslated the mathematics (Lean goal doesn't match original step)
-- C: Correct math, but Mathlib lacks the needed lemma
-- D: The lemma exists in Mathlib but wasn't found / tactic can solve it
-- E: Correct but mechanically hard to express in Lean
-- F: The original text is ambiguous or underspecified
+- A: Goal is mechanically REFUTED (you can construct a counterexample that Lean can verify)
+- C: AI suspects the reasoning is WRONG, but cannot mechanically verify (verification_score low)
+- D: Correct math, but can't mechanize — library gap or formalization hard (verification_score high)
+- E: Indeterminate — ambiguous source, insufficient info (verification_score mid)
+
+NOTE: Type B (Verified) is assigned automatically when tactics solve the goal. Do NOT assign B.
 
 IMPORTANT RULES:
-1. If tactics solve the goal, check: does the tactic's method match the original proof's claimed reasoning? If not, this may still be A2.
-2. A1 requires a concrete counterexample. A2 requires showing the claimed reasoning doesn't work.
-3. If you suspect translation error, classify as B, not A.
+1. Type A requires a concrete counterexample or structural impossibility proof.
+2. Type C: the claimed reasoning appears invalid, even if the goal might be true.
+3. Type D: the math is correct but Lean/Mathlib can't handle it.
+4. Type E: you genuinely can't tell — ambiguous text, blocked dependency, or conflicting evidence.
+5. Pay attention to Structural Context — root sorrys are more likely to be genuine errors.
+6. If Reference Materials are provided, cross-check any cited theorems.
+
+{reference_context}
 
 Respond:
 {{
-  "classification": "A1",
-  "confidence": 0.9,
+  "classification": "C",
+  "verification_score": 0.2,
+  "confidence": 0.85,
   "reasoning": "explanation",
   "claimed_reason_valid": false,
-  "counterexample": "a=3, b=5 shows ..."
+  "counterexample": null
 }}
 """
 
@@ -189,7 +246,8 @@ Respond:
         resp = client.chat(user_prompt)
         result = _parse_json_response(resp.content)
     except Exception as e:
-        result = {"classification": "E", "confidence": 0.3, "reasoning": f"AI failed: {e}"}
+        result = {"classification": "E", "verification_score": 0.5,
+                  "confidence": 0.3, "reasoning": f"AI failed: {e}"}
 
     # Build gap and classification
     gap = SorryGap(
@@ -201,69 +259,84 @@ Respond:
     )
 
     raw_type = result.get("classification", "E")
-    # Handle legacy "A" label
-    if raw_type == "A":
-        raw_type = "A1"
+    # Handle legacy labels
+    if raw_type in ("A1", "A2"):
+        raw_type = "A" if raw_type == "A1" else "C"
+    if raw_type in ("F", "G"):
+        raw_type = "E"
 
     type_map = {
-        "A1": SorryType.A1_FALSE_CLAIM,
-        "A2": SorryType.A2_INVALID_JUSTIFICATION,
-        "B": SorryType.B_TRANSLATION_ERROR,
-        "C": SorryType.C_MATHLIB_GAP,
-        "D": SorryType.D_API_MISS,
-        "E": SorryType.E_FORMALIZATION_HARD,
-        "F": SorryType.F_SOURCE_AMBIGUITY,
-        "G": SorryType.G_BLOCKED_DESCENDANT,
+        "A": SorryType.A_REFUTED,
+        "B": SorryType.B_VERIFIED,
+        "C": SorryType.C_SUSPECT_ERROR,
+        "D": SorryType.D_LIKELY_CORRECT,
+        "E": SorryType.E_INDETERMINATE,
     }
-    classification = type_map.get(raw_type, SorryType.E_FORMALIZATION_HARD)
+    classification = type_map.get(raw_type, SorryType.E_INDETERMINATE)
+    confidence = float(result.get("confidence", 0.5))
+    verification_score = float(result.get("verification_score",
+                                          classification.default_score))
+
+    # ── Post-classification hardening rules ──
+    if struct:
+        is_root = struct.get("is_root", False)
+        downstream = struct.get("downstream_count", 0)
+
+        # Rule 1: Root sorry classified as A → boost confidence
+        if is_root and classification == SorryType.A_REFUTED:
+            confidence = min(confidence + 0.05, 1.0)
+            result["reasoning"] = result.get("reasoning", "") + (
+                " [Structure: root sorry — error is foundational, confidence boosted.]"
+            )
+
+        # Rule 2: High downstream impact → flag in reasoning
+        if downstream >= 2 and classification in (SorryType.A_REFUTED, SorryType.C_SUSPECT_ERROR):
+            confidence = min(confidence + 0.05, 1.0)
+            result["reasoning"] = result.get("reasoning", "") + (
+                f" [Structure: {downstream} downstream steps blocked — high impact.]"
+            )
 
     # Build internal axes
     axes = InternalAxes(provenance=ProvenanceStatus.ROOT)
 
     if fidelity_score is not None and fidelity_score < 0.7:
         axes.fidelity = Fidelity.SUSPECT
-    if classification == SorryType.B_TRANSLATION_ERROR:
-        axes.fidelity = Fidelity.SUSPECT
-    if classification == SorryType.F_SOURCE_AMBIGUITY:
-        axes.fidelity = Fidelity.AMBIGUOUS_SOURCE
-
-    if classification == SorryType.A1_FALSE_CLAIM:
+    if classification == SorryType.A_REFUTED:
         axes.justification = JustificationStatus.INVALID_FALSE
-    elif classification == SorryType.A2_INVALID_JUSTIFICATION:
+    elif classification == SorryType.C_SUSPECT_ERROR:
         axes.justification = JustificationStatus.INVALID_NONSEQUITUR
-    elif classification == SorryType.D_API_MISS:
-        axes.mechanization = MechanizationStatus.API_FOUND
 
     return SorryClassification(
         sorry=gap,
         classification=classification,
-        confidence=float(result.get("confidence", 0.5)),
+        confidence=confidence,
+        verification_score=verification_score,
         reasoning=result.get("reasoning", ""),
         evidence={
             "tactic_results": sorry_data.get("tactic_results", []),
             "goal": sorry_data.get("goal", ""),
+            "structure": struct,
         },
         internal_axes=axes,
         counterexample=result.get("counterexample"),
     )
 
 
-# ── Verifier (Round 4) — FIXED LOGIC ────────────────────────
+# ── Verifier (Round 4) ──────────────────────────────────────
 
 
-def verify_type_a(
+def verify_suspect(
     client: AIClient,
     sorry_data: dict,
     original_proof: str,
     current_type: SorryType,
+    reference_context: str = "",
 ) -> dict:
     """Round 4: Verifier Agent — counterexample search + justification check.
 
-    CRITICAL FIX: Alternative proof → "salvageable" flag, NOT downgrade.
-    - A1 (false claim): downgrade ONLY if counterexample search fails AND
-      same-method proof succeeds
-    - A2 (invalid justification): NEVER downgrade just because alternative
-      proof exists. Must verify the ORIGINAL claimed reasoning.
+    Targets:
+      - Type A: attempt mechanical verification of counterexample
+      - Type C: verify whether original reasoning is actually invalid
     """
     system_prompt = _load_prompt("verifier")
 
@@ -275,7 +348,7 @@ def verify_type_a(
 ### Original Proof Text
 {original_proof}
 
-### Current Classification: {current_type.value}
+### Current Classification: Type {current_type.value}
 
 ### Instructions
 You must perform THREE separate checks:
@@ -285,8 +358,8 @@ You must perform THREE separate checks:
 3. **Alternative Proof**: Try to prove the goal by ANY other method.
 
 CRITICAL RULE: Finding an alternative proof does NOT mean the original reasoning is correct.
-Example: If the original says "by Fubini" but you prove it "by Tonelli", the original reasoning
-is STILL wrong — the goal is merely salvageable.
+
+{reference_context}
 
 Respond with ONLY a JSON object:
 {{
@@ -296,8 +369,9 @@ Respond with ONLY a JSON object:
   "same_method_detail": "The original claims a single k, which requires a=b",
   "alternative_proof_found": true,
   "alternative_method": "Using separate witnesses k1, k2",
-  "confidence_a1": 0.95,
-  "confidence_a2": 0.85,
+  "confidence_refuted": 0.95,
+  "confidence_suspect": 0.85,
+  "verification_score": 0.05,
   "reasoning": "..."
 }}
 """
@@ -310,8 +384,9 @@ Respond with ONLY a JSON object:
             "counterexample_found": False,
             "same_method_works": False,
             "alternative_proof_found": False,
-            "confidence_a1": 0.5,
-            "confidence_a2": 0.5,
+            "confidence_refuted": 0.5,
+            "confidence_suspect": 0.5,
+            "verification_score": 0.5,
             "reasoning": f"Verification failed: {e}",
         }
 
@@ -322,11 +397,11 @@ def apply_verification(
 ) -> None:
     """Apply verification results to a classification.
 
-    FIXED LOGIC:
-      - Counterexample found → A1 confirmed, high confidence
-      - No counterexample, same_method fails → A2 (reasoning wrong, goal maybe salvageable)
-      - No counterexample, same_method works → downgrade to D/E
-      - Alternative proof found → set salvageable=True (but keep A1/A2)
+    Logic:
+      - Counterexample found → A (Refuted), s=0
+      - No counterexample, same_method fails → C (Suspect Error), s low
+      - No counterexample, same_method works → B (Verified), s=1.0
+      - Alternative proof found → salvageable=True (but keeps A/C)
     """
     cls.evidence["verification"] = verify_result
 
@@ -335,33 +410,36 @@ def apply_verification(
     alt_proof = verify_result.get("alternative_proof_found", False)
 
     if has_cx:
-        # A1 confirmed: goal is straight-up false
-        cls.classification = SorryType.A1_FALSE_CLAIM
-        cls.confidence = max(cls.confidence, float(verify_result.get("confidence_a1", 0.9)))
+        # A: Refuted — goal is false
+        cls.classification = SorryType.A_REFUTED
+        cls.verification_score = 0.0
+        cls.confidence = max(cls.confidence, float(verify_result.get("confidence_refuted", 0.9)))
         cls.counterexample = verify_result.get("counterexample", "")
         cls.reasoning += f"\n\n[Verifier] Counterexample: {cls.counterexample}"
         if cls.internal_axes:
             cls.internal_axes.justification = JustificationStatus.INVALID_FALSE
 
     elif not same_method:
-        # A2: original reasoning doesn't work, but goal might be salvageable
-        cls.classification = SorryType.A2_INVALID_JUSTIFICATION
-        cls.confidence = max(cls.confidence, float(verify_result.get("confidence_a2", 0.7)))
+        # C: Suspect Error — reasoning doesn't work, but goal may be salvageable
+        cls.classification = SorryType.C_SUSPECT_ERROR
+        cls.verification_score = float(verify_result.get("verification_score", 0.15))
+        cls.confidence = max(cls.confidence, float(verify_result.get("confidence_suspect", 0.7)))
         detail = verify_result.get("same_method_detail", "")
         cls.reasoning += f"\n\n[Verifier] Original reasoning invalid: {detail}"
         if cls.internal_axes:
             cls.internal_axes.justification = JustificationStatus.INVALID_NONSEQUITUR
 
     else:
-        # Same method works → this wasn't A after all, likely D or E
-        cls.classification = SorryType.D_API_MISS
-        cls.confidence = 0.7
-        cls.reasoning += "\n\n[Verifier] Same-method proof succeeded. Reclassified as API miss."
+        # Same method works → B: Verified
+        cls.classification = SorryType.B_VERIFIED
+        cls.verification_score = 1.0
+        cls.confidence = 0.9
+        cls.reasoning += "\n\n[Verifier] Same-method proof succeeded. Reclassified as Verified."
         if cls.internal_axes:
             cls.internal_axes.justification = JustificationStatus.VALID
-            cls.internal_axes.mechanization = MechanizationStatus.API_MISSING
+            cls.internal_axes.mechanization = MechanizationStatus.API_FOUND
 
-    # Mark salvageability (independent of A1/A2 classification!)
+    # Mark salvageability (independent of classification!)
     if alt_proof:
         cls.salvageable = True
         cls.alternative_proof = verify_result.get("alternative_method", "")
@@ -380,24 +458,27 @@ def compute_risk_score(
 ) -> float:
     """Compute a risk score for a sorry classification.
 
-    risk = uncertainty × descendant_count × criticality
-
-    High risk nodes that aren't currently Type A should still
-    be reviewed by the Verifier.
+    risk = uncertainty × descendant_factor × criticality
     """
     uncertainty = 1.0 - cls.confidence
 
-    # Count how many other sorrys are blocked by this one
-    sorry_id = cls.sorry.sorry_id
-    descendant_count = sum(
-        1 for other in all_classifications
-        if sorry_id in (other.sorry.blocked_by or [])
-    )
+    # Descendant count: prefer structural data, fall back to blocked_by scan
+    struct = cls.evidence.get("structure", {}) if cls.evidence else {}
+    if struct and "downstream_count" in struct:
+        descendant_count = struct["downstream_count"]
+    else:
+        sorry_id = cls.sorry.sorry_id
+        descendant_count = sum(
+            1 for other in all_classifications
+            if sorry_id in (other.sorry.blocked_by or [])
+        )
 
-    # Criticality: early lines (theorem-level) > late lines (side conditions)
-    # Normalize: line 1 = highest criticality
-    max_line = max((c.sorry.line for c in all_classifications), default=1)
-    criticality = 1.0 - (cls.sorry.line / max(max_line, 1)) * 0.5
+    # Criticality: root sorrys and shallow depth = higher criticality
+    if struct and struct.get("is_root"):
+        criticality = 1.0  # Root sorrys are always critical
+    else:
+        max_line = max((c.sorry.line for c in all_classifications), default=1)
+        criticality = 1.0 - (cls.sorry.line / max(max_line, 1)) * 0.5
 
     risk = uncertainty * (1 + descendant_count) * criticality
     return round(risk, 3)
@@ -410,21 +491,26 @@ def run_full_audit(
     sorry_diagnoses: list[dict],
     proof_title: str = "Untitled Proof",
     fidelity_score: Optional[float] = None,
+    reference_context: str = "",
 ) -> AuditReport:
     """Run the complete audit pipeline (Rounds 3-5).
 
-    v2 features:
-      - Dependency analysis + blocked descendant quarantine
-      - A1/A2 split with corrected Verifier logic
-      - C/D-loop: reclassify C→D if tactic results show solvability
-      - Risk score: Verifier also checks high-risk non-A nodes
+    v4 features:
+      - 5-type A-E classification with verification score
+      - Tactic success → Type B (auto-resolved, s=1.0)
+      - Blocked descendants → Type E (Indeterminate)
+      - Verifier targets A and C types
       - Cost tracking per round
     """
     from core.ai_client import get_cost_tracker
     tracker = get_cost_tracker()
 
-    # Build dependency graph
-    sorry_diagnoses = build_dependency_graph(lean_code, sorry_diagnoses)
+    # Build dependency graph ONLY if not already computed by pipeline
+    has_dependency_data = any(
+        "blocked_by" in d for d in sorry_diagnoses
+    )
+    if not has_dependency_data:
+        sorry_diagnoses = build_dependency_graph(lean_code, sorry_diagnoses)
 
     classifications = []
 
@@ -432,41 +518,94 @@ def run_full_audit(
     tracker.set_round("R3_classification")
     for sorry_data in sorry_diagnoses:
         classification = classify_sorry_with_ai(
-            client, sorry_data, original_proof, lean_code, fidelity_score
+            client, sorry_data, original_proof, lean_code, fidelity_score,
+            reference_context=reference_context,
         )
         classifications.append(classification)
 
-    # ── C/D-loop: reclassify C→D if tactics actually solved it ──
-    for cls in classifications:
-        if cls.classification == SorryType.C_MATHLIB_GAP:
-            # Check if any tactic already solved it (AI may have missed this)
-            tactic_data = cls.evidence.get("tactic_results", [])
-            if any(tr.get("success") for tr in tactic_data):
-                cls.classification = SorryType.D_API_MISS
-                cls.confidence = max(cls.confidence, 0.85)
-                cls.reasoning += (
-                    "\n\n[C/D-loop] Reclassified C→D: a tactic already solved this goal. "
-                    "The lemma exists but was missed by initial classification."
+    # ── Round 3b: Propagate Type B resolutions to unblock descendants ──
+    # When an upstream sorry is auto-resolved (Type B), it no longer blocks
+    # downstream sorrys. Re-classify any descendant that becomes unblocked.
+    resolved_ids = {
+        cls.sorry.sorry_id
+        for cls in classifications
+        if cls.classification == SorryType.B_VERIFIED
+    }
+    if resolved_ids:
+        reclassify_indices = []
+        for i, cls in enumerate(classifications):
+            if cls.classification != SorryType.E_INDETERMINATE:
+                continue
+            remaining_blockers = [
+                b for b in (cls.sorry.blocked_by or [])
+                if b not in resolved_ids
+            ]
+            if len(remaining_blockers) < len(cls.sorry.blocked_by or []):
+                # At least one blocker was resolved
+                cls.sorry.blocked_by = remaining_blockers
+                if not remaining_blockers:
+                    # Fully unblocked — needs reclassification
+                    reclassify_indices.append(i)
+
+        if reclassify_indices:
+            tracker.set_round("R3b_reclassification")
+            for idx in reclassify_indices:
+                sorry_data = sorry_diagnoses[idx]
+                # Clear blocking flags so classify_sorry_with_ai won't fast-path to E
+                sorry_data["is_blocked"] = False
+                sorry_data["blocked_by"] = []
+                new_cls = classify_sorry_with_ai(
+                    client, sorry_data, original_proof, lean_code, fidelity_score,
+                    reference_context=reference_context,
                 )
-                if cls.internal_axes:
-                    cls.internal_axes.mechanization = MechanizationStatus.API_FOUND
+                classifications[idx] = new_cls
+
+        # Repeat until no more propagation (handles transitive chains)
+        changed = True
+        while changed:
+            changed = False
+            resolved_ids = {
+                cls.sorry.sorry_id
+                for cls in classifications
+                if cls.classification == SorryType.B_VERIFIED
+            }
+            reclassify_indices = []
+            for i, cls in enumerate(classifications):
+                if cls.classification != SorryType.E_INDETERMINATE:
+                    continue
+                remaining_blockers = [
+                    b for b in (cls.sorry.blocked_by or [])
+                    if b not in resolved_ids
+                ]
+                if len(remaining_blockers) < len(cls.sorry.blocked_by or []):
+                    cls.sorry.blocked_by = remaining_blockers
+                    if not remaining_blockers:
+                        reclassify_indices.append(i)
+
+            for idx in reclassify_indices:
+                changed = True
+                sorry_data = sorry_diagnoses[idx]
+                sorry_data["is_blocked"] = False
+                sorry_data["blocked_by"] = []
+                new_cls = classify_sorry_with_ai(
+                    client, sorry_data, original_proof, lean_code, fidelity_score,
+                    reference_context=reference_context,
+                )
+                classifications[idx] = new_cls
 
     # ── Compute risk scores ──
     for cls in classifications:
         cls.risk_score = compute_risk_score(cls, classifications)
 
-    # ── Round 4: Verify Type A suspects + high-risk nodes ──
+    # ── Round 4: Verify Type A and C suspects + high-risk nodes ──
     tracker.set_round("R4_verification")
 
-    # Collect nodes to verify:
-    # 1. All Type A nodes (always)
-    # 2. High-risk non-A nodes (risk > 0.3)
     RISK_THRESHOLD = 0.3
     to_verify = []
     for cls in classifications:
-        if cls.classification.is_type_a:
+        if cls.classification in (SorryType.A_REFUTED, SorryType.C_SUSPECT_ERROR):
             to_verify.append(cls)
-        elif cls.risk_score > RISK_THRESHOLD and cls.classification.value != "G":
+        elif cls.risk_score > RISK_THRESHOLD and cls.classification != SorryType.E_INDETERMINATE:
             to_verify.append(cls)
 
     for cls in to_verify:
@@ -474,8 +613,9 @@ def run_full_audit(
             "goal": cls.sorry.lean_goal,
             "line": cls.sorry.line,
         }
-        verify_result = verify_type_a(
-            client, sorry_data_for_verify, original_proof, cls.classification
+        verify_result = verify_suspect(
+            client, sorry_data_for_verify, original_proof, cls.classification,
+            reference_context=reference_context,
         )
         apply_verification(cls, verify_result)
 
@@ -505,4 +645,5 @@ def _parse_json_response(text: str) -> dict:
         except json.JSONDecodeError:
             pass
 
-    return {"classification": "E", "confidence": 0.3, "reasoning": text}
+    return {"classification": "E", "verification_score": 0.5,
+            "confidence": 0.3, "reasoning": text}

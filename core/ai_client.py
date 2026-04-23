@@ -67,7 +67,7 @@ API_KEY_VARS = {
     "openrouter": "OPENROUTER_API_KEY",
 }
 
-TIMEOUT = 300  # 5 minutes
+TIMEOUT = 600  # 10 minutes — complex math translations can be slow
 
 
 @dataclass
@@ -197,19 +197,55 @@ def reset_cost_tracker() -> CostTracker:
     return _global_tracker
 
 
+MAX_RETRIES = 4
+RETRY_BACKOFF_BASE = 5  # seconds; delays: 5, 10, 20, 40
+
+
 def _post(url: str, headers: dict, body: dict) -> dict:
-    """Send a POST request and return parsed JSON."""
-    req = urllib.request.Request(
-        url,
-        data=json.dumps(body).encode(),
-        headers={"Content-Type": "application/json", **headers},
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
-            return json.loads(resp.read().decode())
-    except urllib.error.HTTPError as e:
-        detail = e.read().decode() if e.fp else ""
-        raise RuntimeError(f"API error {e.code}: {detail}") from e
+    """Send a POST request and return parsed JSON.
+
+    Retries with exponential backoff on transient failures:
+    TimeoutError, ConnectionError, HTTP 429/502/503/504.
+    """
+    encoded = json.dumps(body).encode()
+    last_exc: Exception | None = None
+
+    for attempt in range(MAX_RETRIES + 1):
+        req = urllib.request.Request(
+            url,
+            data=encoded,
+            headers={"Content-Type": "application/json", **headers},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
+                return json.loads(resp.read().decode())
+        except urllib.error.HTTPError as e:
+            if e.code in (429, 502, 503, 504):
+                last_exc = e
+                delay = RETRY_BACKOFF_BASE * (2 ** attempt)
+                print(
+                    f"  ⚠️  HTTP {e.code} on attempt {attempt + 1}/{MAX_RETRIES + 1}, "
+                    f"retrying in {delay}s ...",
+                    file=sys.stderr,
+                )
+                time.sleep(delay)
+                continue
+            detail = e.read().decode() if e.fp else ""
+            raise RuntimeError(f"API error {e.code}: {detail}") from e
+        except (TimeoutError, ConnectionError, OSError) as e:
+            last_exc = e
+            delay = RETRY_BACKOFF_BASE * (2 ** attempt)
+            print(
+                f"  ⚠️  {type(e).__name__} on attempt {attempt + 1}/{MAX_RETRIES + 1}, "
+                f"retrying in {delay}s ...",
+                file=sys.stderr,
+            )
+            time.sleep(delay)
+            continue
+
+    raise RuntimeError(
+        f"API call failed after {MAX_RETRIES + 1} attempts: {last_exc}"
+    ) from last_exc
 
 
 class AIClient:
@@ -338,6 +374,117 @@ class AIClient:
             provider="gemini",
             usage=data.get("usageMetadata", {}),
         )
+
+    def chat_multimodal(
+        self, content_parts: list[dict], temperature: float = 0.3
+    ) -> str:
+        """Send a multimodal message (images + text) and get a text response.
+
+        Used by the vision backend for PDF extraction. Supports OpenAI and
+        OpenRouter providers (which accept content arrays with image_url parts).
+
+        Args:
+            content_parts: List of content parts, e.g.:
+                [{"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}},
+                 {"type": "text", "text": "Extract theorems from these pages."}]
+            temperature: Sampling temperature.
+
+        Returns:
+            The model's text response.
+        """
+        if self.provider in ("openai", "openrouter"):
+            if self.provider == "openai":
+                base = os.environ.get(
+                    "OPENAI_BASE_URL", "https://api.openai.com/v1"
+                ).rstrip("/")
+                url = f"{base}/chat/completions"
+            else:
+                url = "https://openrouter.ai/api/v1/chat/completions"
+
+            t0 = time.time()
+            data = _post(
+                url,
+                {"Authorization": f"Bearer {self.api_key}"},
+                {
+                    "model": self.model,
+                    "temperature": temperature,
+                    "messages": [
+                        {"role": "system", "content": self.system_prompt},
+                        {"role": "user", "content": content_parts},
+                    ],
+                },
+            )
+            latency = (time.time() - t0) * 1000
+            content = data["choices"][0]["message"]["content"]
+
+            # Track cost
+            resp = AIResponse(
+                content=content,
+                model=self.model,
+                provider=self.provider,
+                usage=data.get("usage", {}),
+                latency_ms=latency,
+            )
+            get_cost_tracker().record(resp)
+            return content
+
+        elif self.provider == "anthropic":
+            # Convert OpenAI-style content parts to Anthropic format
+            anthropic_parts = []
+            for part in content_parts:
+                if part["type"] == "image_url":
+                    # Extract base64 data from data URL
+                    data_url = part["image_url"]["url"]
+                    # Format: data:image/png;base64,<data>
+                    _, b64_data = data_url.split(",", 1)
+                    media_type = data_url.split(";")[0].split(":")[1]
+                    anthropic_parts.append({
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": media_type,
+                            "data": b64_data,
+                        },
+                    })
+                elif part["type"] == "text":
+                    anthropic_parts.append({"type": "text", "text": part["text"]})
+
+            t0 = time.time()
+            data = _post(
+                "https://api.anthropic.com/v1/messages",
+                {
+                    "x-api-key": self.api_key,
+                    "anthropic-version": "2023-06-01",
+                },
+                {
+                    "model": self.model,
+                    "max_tokens": 8192,
+                    "temperature": temperature,
+                    "system": self.system_prompt,
+                    "messages": [{"role": "user", "content": anthropic_parts}],
+                },
+            )
+            latency = (time.time() - t0) * 1000
+            content = "".join(
+                block["text"]
+                for block in data.get("content", [])
+                if block.get("type") == "text"
+            )
+            resp = AIResponse(
+                content=content,
+                model=self.model,
+                provider="anthropic",
+                usage=data.get("usage", {}),
+                latency_ms=latency,
+            )
+            get_cost_tracker().record(resp)
+            return content
+
+        else:
+            raise NotImplementedError(
+                f"Multimodal not supported for provider: {self.provider}. "
+                "Use openai, anthropic, or openrouter."
+            )
 
     def _call_openrouter(self, message: str, temperature: float) -> AIResponse:
         data = _post(

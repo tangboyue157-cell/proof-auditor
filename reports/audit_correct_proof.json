@@ -1,0 +1,268 @@
+{
+  "proof_title": "correct_proof",
+  "diagnostician_verdict": "VERIFIED_CORRECT",
+  "final_verdict": "VERIFIED_CORRECT",
+  "adjudicator_confidence": 0.5,
+  "total_sorrys": 0,
+  "adjudication": {
+    "final_verdict": "VERIFIED_CORRECT",
+    "confidence": 0.5,
+    "has_overrides": false,
+    "overrides": [],
+    "narrative": {
+      "diagnosis": "Unable to parse adjudication narrative.",
+      "fix_suggestion": "",
+      "impact_assessment": ""
+    }
+  },
+  "back_translation": {
+    "mode": "auto",
+    "fidelity_score": 1.0,
+    "overall_match": true,
+    "translation_attempts": 1,
+    "persistent_low_fidelity": false,
+    "back_translated_text": "**Theorem.** For integers \\(a\\) and \\(b\\), if \\(a\\) and \\(b\\) are odd, then \\(a+b\\) is even.\n\n*Proof.* Since \\(a\\) is odd and \\(b\\) is odd, there exist integers \\(k\\) and \\(j\\) such that \\(a = 2k + 1\\) and \\(b = 2j + 1\\). The proof then rewrites\n\\[\na+b = (2k+1) + (2j+1).\n\\]\nIt follows that\n\\[\na+b = 2k + 2j + 2,\n\\]\nbecause\n\\[\n(2k+1) + (2j+1) = 2k + 2j + 2.\n\\]\nThen\n\\[\na+b = 2(k+j+1),\n\\]\nbecause\n\\[\n2k + 2j + 2 = 2(k+j+1).\n\\]\nTherefore \\(a+b\\) is even, and \\(k+j+1\\) is a witness for this. □",
+    "original_proof": "Theorem: The sum of two odd integers is even.\n\nProof:\n1. Let a and b be two odd integers.\n2. By definition of odd integers, there exist integers k and j such that a = 2k + 1 and b = 2j + 1.\n3. Therefore, their sum is a + b = (2k + 1) + (2j + 1).\n4. By rearranging the terms, we get a + b = 2k + 2j + 2 = 2(k + j + 1).\n5. Since k + j + 1 is an integer, we conclude that a + b is even.\n",
+    "flagged_steps": []
+  },
+  "root_causes": [],
+  "blocked_descendants": 0,
+  "classifications": [],
+  "cost": {
+    "total_calls": 5,
+    "total_input_tokens": 7899,
+    "total_output_tokens": 44716,
+    "total_latency_s": 829.6,
+    "per_round": {
+      "R1_forward_translate": {
+        "calls": 1,
+        "input_tokens": 2188,
+        "output_tokens": 16315,
+        "latency_ms": 297742.6550388336
+      },
+      "R1.5_backtranslation_0": {
+        "calls": 2,
+        "input_tokens": 2962,
+        "output_tokens": 15408,
+        "latency_ms": 291140.75660705566
+      },
+      "R2.5_graph_analysis": {
+        "calls": 1,
+        "input_tokens": 1730,
+        "output_tokens": 4382,
+        "latency_ms": 82214.81800079346
+      },
+      "R6_adjudication": {
+        "calls": 1,
+        "input_tokens": 1019,
+        "output_tokens": 8611,
+        "latency_ms": 158535.50100326538
+      }
+    }
+  },
+  "proof_graph": {
+    "nodes": [],
+    "edges": [
+      {
+        "from": "s1",
+        "to": "s2",
+        "type": "data_flow",
+        "confidence": 0.99,
+        "source": "ai",
+        "explanation": "s2 needs the specific witnesses k and j and the equalities a = 2*k + 1 and b = 2*j + 1 that are obtained from s1 in order to substitute into a + b."
+      },
+      {
+        "from": "s2",
+        "to": "s3",
+        "type": "logical_prerequisite",
+        "confidence": 0.97,
+        "source": "ai",
+        "explanation": "s3 algebraically rearranges the expanded sum expression established in s2, so the equality in s2 is the direct starting point for s3."
+      },
+      {
+        "from": "s3",
+        "to": "s4",
+        "type": "logical_prerequisite",
+        "confidence": 0.97,
+        "source": "ai",
+        "explanation": "s4 factors 2 out of the expression a + b = 2*k + 2*j + 2 proved in s3; that rearranged form is the direct prerequisite for the factoring step."
+      },
+      {
+        "from": "s4",
+        "to": "s5",
+        "type": "logical_prerequisite",
+        "confidence": 0.98,
+        "source": "ai",
+        "explanation": "To conclude Even (a + b), s5 needs the representation a + b = 2*(k + j + 1) from s4, which provides the required evenness witness."
+      }
+    ],
+    "topo_order": [],
+    "critical_path": [],
+    "independent_groups": [],
+    "root_node_ids": []
+  },
+  "proof_structure": {
+    "theorem_name": "",
+    "theorem_statement": "",
+    "proof_strategy": "cases",
+    "sorry_count": 0,
+    "max_depth": 2,
+    "steps": [
+      {
+        "name": "s1",
+        "type": "have",
+        "line": 12,
+        "end_line": 13,
+        "depth": 1,
+        "has_sorry": false,
+        "sorry_id": "s1",
+        "claimed_reason": "definition of odd integers",
+        "references": [],
+        "introduces": [
+          "s1"
+        ],
+        "parent": null
+      },
+      {
+        "name": "s2",
+        "type": "have",
+        "line": 18,
+        "end_line": 19,
+        "depth": 1,
+        "has_sorry": false,
+        "sorry_id": "s2",
+        "claimed_reason": "substituting the expressions for a and b",
+        "references": [],
+        "introduces": [
+          "s2"
+        ],
+        "parent": null
+      },
+      {
+        "name": "s3",
+        "type": "have",
+        "line": 24,
+        "end_line": 27,
+        "depth": 1,
+        "has_sorry": false,
+        "sorry_id": "s3",
+        "claimed_reason": "rearranging and simplifying the sum",
+        "references": [],
+        "introduces": [
+          "s3"
+        ],
+        "parent": null
+      },
+      {
+        "name": "calc_L25",
+        "type": "calc",
+        "line": 25,
+        "end_line": 27,
+        "depth": 2,
+        "has_sorry": false,
+        "sorry_id": "",
+        "claimed_reason": "",
+        "references": [
+          "s2"
+        ],
+        "introduces": [],
+        "parent": "s3"
+      },
+      {
+        "name": "s4",
+        "type": "have",
+        "line": 32,
+        "end_line": 35,
+        "depth": 1,
+        "has_sorry": false,
+        "sorry_id": "s4",
+        "claimed_reason": "factoring out 2",
+        "references": [],
+        "introduces": [
+          "s4"
+        ],
+        "parent": null
+      },
+      {
+        "name": "calc_L33",
+        "type": "calc",
+        "line": 33,
+        "end_line": 35,
+        "depth": 2,
+        "has_sorry": false,
+        "sorry_id": "",
+        "claimed_reason": "",
+        "references": [
+          "s3"
+        ],
+        "introduces": [],
+        "parent": "s4"
+      },
+      {
+        "name": "s5",
+        "type": "have",
+        "line": 40,
+        "end_line": 41,
+        "depth": 1,
+        "has_sorry": false,
+        "sorry_id": "s5",
+        "claimed_reason": "definition of even integers with witness k + j + 1",
+        "references": [
+          "s4"
+        ],
+        "introduces": [
+          "s5"
+        ],
+        "parent": null
+      }
+    ],
+    "edges": [
+      {
+        "from": "s2",
+        "to": "calc_L25",
+        "type": "hypothesis_ref",
+        "evidence": "calc_L25 uses 's2' from s2"
+      },
+      {
+        "from": "s3",
+        "to": "calc_L25",
+        "type": "structural",
+        "evidence": "calc_L25 is nested inside s3"
+      },
+      {
+        "from": "s3",
+        "to": "calc_L33",
+        "type": "hypothesis_ref",
+        "evidence": "calc_L33 uses 's3' from s3"
+      },
+      {
+        "from": "s4",
+        "to": "calc_L33",
+        "type": "structural",
+        "evidence": "calc_L33 is nested inside s4"
+      },
+      {
+        "from": "s4",
+        "to": "s5",
+        "type": "hypothesis_ref",
+        "evidence": "s5 uses 's4' from s4"
+      }
+    ],
+    "root_steps": [
+      "s1",
+      "s2",
+      "s3",
+      "s4"
+    ],
+    "leaf_steps": [
+      "s1",
+      "calc_L25",
+      "calc_L33",
+      "s5"
+    ],
+    "critical_chain": [
+      "s3",
+      "calc_L25"
+    ]
+  }
+}

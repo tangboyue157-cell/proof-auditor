@@ -37,3 +37,16 @@ reports/output/
 # Environment
 .env
 .env.local
+
+# Node.js / UI
+node_modules/
+ui/client/dist/
+ui/server/dist/
+*.tsbuildinfo
+
+# Workspace temp files
+ProofAuditor/Workspace/*.pdf
+ProofAuditor/Workspace/.decision_*
+
+# Pytest
+.pytest_cache/

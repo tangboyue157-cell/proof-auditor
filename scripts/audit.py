@@ -22,18 +22,22 @@ from typing import Optional
 
 from core.ai_client import AIClient, get_cost_tracker, reset_cost_tracker
 from core.back_translator import BackTranslationMode, BackTranslationResult, run_back_translation
+from core.classifier import SorryType
 from core.diagnostician import run_full_audit
+from core.forward_translator import forward_translate, ForwardTranslationResult
 from core.latex_parser import extract_proof_block, parse_latex_file
+from core.mathlib_reference import build_reference_context
+from core.pdf_extractor import extract_from_pdf, list_pdf_theorems
+from core.reference_extractor import extract_reference_context
 from core.lean_lsp import LeanLSP
 from core.translator_parser import parse_translator_output
 
 ROOT_DIR = Path(__file__).parent.parent
-TRANSLATOR_PROMPT = (ROOT_DIR / "agents" / "translator.md").read_text()
 WORKSPACE_DIR = ROOT_DIR / "ProofAuditor" / "Workspace"
 
 # B-loop configuration
 FIDELITY_THRESHOLD = 0.7   # Below this → trigger retranslation
-MAX_RETRANSLATION = 2       # Maximum retranslation attempts
+MAX_RETRANSLATION = 3       # Maximum retranslation attempts
 
 
 def extract_lean_code(resp: str) -> str:
@@ -43,65 +47,6 @@ def extract_lean_code(resp: str) -> str:
     if matches:
         return matches[0]
     return resp
-
-
-def translate_proof(
-    client: AIClient,
-    proof_text: str,
-    correction_feedback: Optional[str] = None,
-) -> str:
-    """Run Round 1: Translate proof to Lean 4.
-
-    Args:
-        client: AI client.
-        proof_text: Original proof text.
-        correction_feedback: If provided, this is a B-loop retry with specific
-            feedback about what was wrong in the previous translation.
-
-    Returns:
-        Lean 4 code as string.
-    """
-    if correction_feedback:
-        # B-loop retry: targeted retranslation prompt
-        user_prompt = f"""{TRANSLATOR_PROMPT}
-
-## ⚠️ RETRANSLATION REQUEST
-
-Your previous translation was found to be UNFAITHFUL to the original proof.
-The back-translation check detected the following discrepancies:
-
-{correction_feedback}
-
-## CRITICAL INSTRUCTIONS for this retry:
-1. You MUST translate the original proof LITERALLY, even if the math is wrong.
-2. If the original says "there exists an integer k such that a = 2k+1 AND b = 2k+1",
-   you MUST use ONE variable k, NOT two separate variables.
-3. If the original proof has a logical error, your Lean code should have the SAME error.
-4. The sorry gaps are there to absorb errors — that is their purpose.
-5. Do NOT "fix" or "improve" anything. Translate word-for-word as much as possible.
-
-Here is the original proof to translate. Output ONLY the Lean 4 code inside ```lean ... ``` blocks.
-Use `sorry` for every proof step and add comments mapping to original steps.
-Include `import Mathlib` at the top.
-
----
-{proof_text}
-"""
-    else:
-        # First attempt: standard translation
-        user_prompt = f"""{TRANSLATOR_PROMPT}
-
-Here is the proof to translate. Output ONLY the Lean 4 code inside ```lean ... ``` blocks.
-Use `sorry` for every proof step and add comments mapping to original steps.
-Include `import Mathlib` at the top.
-
----
-{proof_text}
-"""
-
-    client.system_prompt = TRANSLATOR_PROMPT
-    resp = client.chat(user_prompt)
-    return extract_lean_code(resp.content)
 
 
 def print_bt_result(bt_result: BackTranslationResult) -> None:
@@ -173,10 +118,18 @@ def _print_graph_children(
         _print_graph_children(graph, child_id, child_prefix, type_map, emoji_map)
 
 
-def run_audit(proof_file: str, mode: str = "auto", theorem: Optional[str] = None) -> None:
+def run_audit(
+    proof_file: str,
+    mode: str = "auto",
+    theorem: Optional[str] = None,
+    backend: str = "pymupdf",
+    pages: Optional[str] = None,
+    refs: Optional[list[str]] = None,
+) -> None:
     """Run full audit pipeline with B-loop retranslation support.
 
     Pipeline:
+      R0    Input parsing (LaTeX / PDF / plain text)
       R1    Translation (natural language → Lean 4)
       R1.5  Back-Translation verification + B-loop (up to 2 retries)
       R2    LSP Analysis (compile, extract sorry goals, try tactics)
@@ -190,8 +143,28 @@ def run_audit(proof_file: str, mode: str = "auto", theorem: Optional[str] = None
 
     proof_path = Path(proof_file)
 
+    # ── Handle PDF files ──
+    if proof_path.suffix.lower() == ".pdf":
+        print(f"📄 PDF file detected: {proof_file}")
+        pdf_result = extract_from_pdf(
+            proof_file, backend=backend, theorem=theorem, pages=pages,
+        )
+        proof_text = pdf_result.get_proof_text(theorem_name=theorem)
+        if proof_text is None:
+            list_pdf_theorems(proof_file)
+            print(f"\n  Use --theorem <name> to select one, or the full text will be used.")
+            return
+        proof_name = theorem or proof_path.stem
+        if pdf_result.has_blocks:
+            print(f"  Using theorem: {theorem or '(first found)'}")
+        else:
+            print(f"  Using raw extracted text ({len(proof_text)} chars)")
+        if pdf_result.extraction_warnings:
+            for w in pdf_result.extraction_warnings:
+                print(f"  ⚠️  {w}")
+
     # ── Handle LaTeX files ──
-    if proof_path.suffix == ".tex":
+    elif proof_path.suffix == ".tex":
         print(f"📄 LaTeX file detected: {proof_file}")
         proof_text = extract_proof_block(proof_file, label=theorem)
         if proof_text is None:
@@ -213,14 +186,35 @@ def run_audit(proof_file: str, mode: str = "auto", theorem: Optional[str] = None
 
     bt_mode = BackTranslationMode(mode)
 
+    # ── R0.5: Extract reference documents ──
+    reference_context = ""
+    if refs:
+        print(f"\n📚 Extracting reference documents ({len(refs)} files)...")
+        reference_context = extract_reference_context(refs)
+        if reference_context:
+            print(f"  ✅ Reference context: {len(reference_context)} chars")
+        else:
+            print(f"  ⚠️  No usable content extracted from references")
+
     print(f"{'='*60}")
     print(f"  PROOF AUDITOR — Full Audit Pipeline")
     print(f"  Input: {proof_file}")
     print(f"  Back-Translation Mode: {bt_mode.value}")
+    if refs:
+        print(f"  References: {len(refs)} documents")
     print(f"{'='*60}")
 
-    # Initialize AI client
-    client = AIClient(provider="openai", model="gpt-5.4")
+    import os
+    provider = os.environ.get("PA_UI_PROVIDER", "openai")
+    model_name = os.environ.get("PA_UI_MODEL", "")
+    
+    kwargs = {"provider": provider}
+    if model_name:
+        kwargs["model"] = model_name
+    elif provider == "openai":
+        kwargs["model"] = "gpt-5.4" # legacy fallback
+        
+    client = AIClient(**kwargs)
 
     # ==========================================
     # Round 1 + 1.5: Translation with B-loop
@@ -230,18 +224,34 @@ def run_audit(proof_file: str, mode: str = "auto", theorem: Optional[str] = None
     translation_attempt = 0
     persistent_low_fidelity = False  # True if fidelity stays low after all retries
 
+    # ── Round 1: Structured Forward Translation ──
+    print(f"\n📝 Round 1: Structured Forward Translation...")
+    tracker.set_round("R1_forward_translate")
+    ft_result = forward_translate(
+        client=client,
+        original_proof=proof_text,
+        theorem_name=proof_name,
+    )
+    lean_code = ft_result.lean_code
+
+    # Print translation diagnostics
+    if ft_result.mathlib_context:
+        from core.mathlib_reference import detect_domains
+        domains = detect_domains(proof_text)
+        print(f"   Mathlib domains: {', '.join(domains[:3]) if domains else '(none)'}")
+    print(f"   Plan: {len(ft_result.plan.proof_steps)} steps, "
+          f"{len(ft_result.plan.binders)} binders, "
+          f"{len(ft_result.plan.ambiguities)} ambiguities")
+    if ft_result.plan.introduced_assumptions:
+        print(f"   ⚠️  Introduced assumptions: {ft_result.plan.introduced_assumptions}")
+    for issue in ft_result.issues:
+        prefix = {"info": "ℹ️", "warning": "⚠️", "fatal": "🔴"}.get(issue.severity, "•")
+        print(f"   {prefix} [{issue.code}] {issue.message}")
+    if ft_result.fatal_issues:
+        print(f"   🔴 Fatal issues detected — translation may be incomplete")
+    print(f"   ✅ Lean code: {len(lean_code.splitlines())} lines (deterministic render)")
+
     while translation_attempt <= MAX_RETRANSLATION:
-        # ── Round 1: Translate ──
-        if translation_attempt == 0:
-            print(f"\n🔄 Round 1: Translating proof to Lean 4...")
-            tracker.set_round("R1_translation")
-            lean_code = translate_proof(client, proof_text)
-        else:
-            print(f"\n🔄 Round 1 (B-loop retry {translation_attempt}/{MAX_RETRANSLATION}):"
-                  f" Retranslating with targeted feedback...")
-            tracker.set_round(f"R1_retry_{translation_attempt}")
-            correction = build_correction_feedback(bt_result)
-            lean_code = translate_proof(client, proof_text, correction_feedback=correction)
 
         # Parse translator metadata
         translator_meta = parse_translator_output(lean_code)
@@ -264,10 +274,107 @@ def run_audit(proof_file: str, mode: str = "auto", theorem: Optional[str] = None
         print(f"   ✅ Translated to {lean_rel}")
         print(f"   Lines: {len(lean_code.splitlines())}")
 
+        # ── Round 1+ : Static Structure Analysis ──
+        from core.proof_structure import analyze_proof_structure
+
+        proof_structure = analyze_proof_structure(lean_code)
+        print(f"\n📐 Round 1+: Static Proof Structure Analysis")
+        print(f"   Theorem: {proof_structure.theorem_name}")
+        print(f"   Strategy: {proof_structure.proof_strategy}")
+        print(f"   Steps: {len(proof_structure.steps)} ({proof_structure.sorry_count} with sorry)")
+        print(f"   Static edges: {len(proof_structure.edges)}")
+        if proof_structure.root_steps:
+            print(f"   Root steps: {', '.join(proof_structure.root_steps[:5])}")
+        if proof_structure.critical_chain:
+            chain = ' → '.join(proof_structure.critical_chain[:6])
+            print(f"   Critical chain: {chain}")
+
         # ── Round 1.5: Back-Translation Check ──
         if bt_mode == BackTranslationMode.OFF:
             print(f"\n⏭️  Round 1.5: Back-Translation skipped (mode=off)")
             break  # No fidelity check → no B-loop
+
+        if bt_mode == BackTranslationMode.WEB:
+            # Web mode: AI back-translates AND compares (for reference score),
+            # then pauses for human decision via web UI.
+            tracker.set_round(f"R1.5_backtranslation_{translation_attempt}")
+            print(f"\n🔁 Round 1.5: Back-Translation + AI Comparison (Human Review)...")
+
+            # Step 0: Extract proof skeleton for structured output
+            from core.back_translator import back_translate, compare_auto, extract_proof_skeleton
+            skeleton = extract_proof_skeleton(lean_code)
+            if skeleton:
+                print(f"   📋 Proof skeleton: {len(skeleton)} steps extracted")
+
+            # Step 1: Back-translate with skeleton guidance
+            bt_text = back_translate(client, lean_code, skeleton=skeleton)
+
+            # Step 2: AI comparison for reference score
+            auto_result = compare_auto(client, proof_text, bt_text)
+            bt_result = auto_result
+            # Override: store the back-translated text explicitly
+            bt_result.back_translation = bt_text
+
+            print_bt_result(bt_result)
+
+            # Step 3: Emit signal for web UI with comparison data
+            review_data = {
+                "original_proof": proof_text,
+                "back_translated_text": bt_text,
+                "fidelity_score": bt_result.fidelity_score,
+                "overall_match": bt_result.overall_match,
+                "flagged_steps": [
+                    {"step_id": c.step_id, "discrepancy": c.discrepancy}
+                    for c in bt_result.comparisons if not c.match
+                ],
+                "attempt": translation_attempt + 1,
+            }
+            import json as _json
+            print(f"__HUMAN_REVIEW__:{_json.dumps(review_data, ensure_ascii=False)}")
+            print(f"\n⏸️  Waiting for human decision via web UI...")
+            print(f"   AI reference fidelity: {bt_result.fidelity_score:.0%}")
+            print(f"   Options: [Approve] [Retry Translation] [Abort]")
+
+            # Step 4: Poll for decision file
+            import time
+            audit_id = os.environ.get("PA_AUDIT_ID", "")
+            decision_file = WORKSPACE_DIR / f".decision_{audit_id}.json"
+            # Clean up any stale decision file
+            if decision_file.exists():
+                decision_file.unlink()
+
+            decision = None
+            while True:
+                if decision_file.exists():
+                    try:
+                        decision = json.loads(decision_file.read_text())
+                        decision_file.unlink()  # Clean up
+                        break
+                    except Exception:
+                        pass
+                time.sleep(1)
+
+            action = decision.get("action", "approve")
+            feedback = decision.get("feedback", "")
+
+            if action == "approve":
+                print(f"\n   ✅ Human approved translation — proceeding to Round 2")
+                bt_result.requires_human = True
+                bt_result.human_message = "Human approved via web UI."
+                break
+            elif action == "retry":
+                print(f"\n   🔄 Human requested retranslation")
+                if feedback:
+                    print(f"   📝 Feedback: {feedback}")
+                translation_attempt += 1
+                if translation_attempt > MAX_RETRANSLATION:
+                    persistent_low_fidelity = True
+                    print(f"\n   🔶 Max retries reached. Continuing with current translation...")
+                    break
+                continue  # Re-enter while loop for B-loop retry
+            elif action == "abort":
+                print(f"\n   ⛔ Human aborted audit")
+                raise SystemExit(1)
 
         tracker.set_round(f"R1.5_backtranslation_{translation_attempt}")
         print(f"\n🔁 Round 1.5: Back-Translation Verification ({bt_mode.value})...")
@@ -322,11 +429,39 @@ def run_audit(proof_file: str, mode: str = "auto", theorem: Optional[str] = None
             print(f"   📌 Line {sg.line}: {goal_preview}...")
 
     # ==========================================
+    # Round 2.1: Plan-Goal Alignment
+    # ==========================================
+    from core.plan_goal_alignment import align_plan_with_goals
+
+    alignment_result = None
+    if ft_result and ft_result.plan.proof_steps:
+        tracker.set_round("R2.1_plan_goal_alignment")
+        print(f"\n🎯 Round 2.1: Plan-Goal Alignment...")
+        alignment_result = align_plan_with_goals(
+            plan=ft_result.plan,
+            sorry_goals=analysis.sorry_goals,
+            lean_code=lean_code,
+        )
+        print(f"   Overall alignment: {alignment_result.overall_score:.0%}")
+        print(f"   Structural match: {alignment_result.structural_match}")
+        for a in alignment_result.alignments:
+            icon = {"exact": "✅", "alpha_equiv": "✅", "minor_diff": "⚠️",
+                    "major_diff": "🔴", "unaligned": "❓"}.get(a.alignment_type, "•")
+            print(f"   {icon} {a.step_id}: {a.alignment_type} ({a.alignment_score:.0%})")
+        if alignment_result.unmatched_plan_steps:
+            print(f"   ⚠️  Unmatched plan steps: {', '.join(alignment_result.unmatched_plan_steps)}")
+        if alignment_result.unmatched_goals:
+            print(f"   ⚠️  Unmatched LSP goals: {', '.join(alignment_result.unmatched_goals)}")
+    else:
+        print(f"\n⏭️  Round 2.1: Plan-Goal Alignment skipped (no plan steps)")
+
+    # ==========================================
     # Round 2.5: Proof Graph Construction
     # ==========================================
     from core.proof_graph import build_proof_graph
 
     print(f"\n🕸️  Round 2.5: Building Proof Dependency Graph...")
+    print(f"   (seeded with {len(proof_structure.edges)} static edges from R1+)")
     proof_graph = build_proof_graph(
         client=client,
         lean_code=lean_code,
@@ -342,14 +477,46 @@ def run_audit(proof_file: str, mode: str = "auto", theorem: Optional[str] = None
     if proof_graph.critical_path:
         print(f"   Critical path: {' → '.join(proof_graph.critical_path)}")
 
-    # Update sorry_diagnoses with graph info
+    # Update sorry_diagnoses with graph + structure info
     for diag in sorry_diagnoses:
         sid = f"sorry_L{diag['line']}"
         diag["blocked_by"] = proof_graph.blocked_by(sid)
         diag["is_blocked"] = len(diag["blocked_by"]) > 0
+
+        # Enrich with R1+ structural context
+        matching_step = None
+        for s in proof_structure.steps:
+            if s.line == diag["line"] or (s.has_sorry and abs(s.line - diag["line"]) <= 2):
+                matching_step = s
+                break
+        if matching_step:
+            diag["structure"] = {
+                "step_name": matching_step.name,
+                "depth": matching_step.depth,
+                "claimed_reason": matching_step.claimed_reason,
+                "references": matching_step.references,
+                "is_root": matching_step.name in proof_structure.root_steps,
+                "is_leaf": matching_step.name in proof_structure.leaf_steps,
+                "upstream_count": len(proof_structure.upstream_of(matching_step.name)),
+                "downstream_count": len(proof_structure.downstream_of(matching_step.name)),
+            }
         if sid in proof_graph.nodes:
             diag["impact_score"] = proof_graph.nodes[sid].impact_score
             diag["depth"] = proof_graph.nodes[sid].depth
+
+        # Enrich with R2.1 plan-goal alignment
+        if alignment_result:
+            for a in alignment_result.alignments:
+                if a.sorry_line and abs(a.sorry_line - diag["line"]) <= 2:
+                    diag["plan_goal_alignment"] = {
+                        "step_id": a.step_id,
+                        "plan_claim": a.plan_claim,
+                        "lean_goal": a.lean_goal,
+                        "alignment_score": a.alignment_score,
+                        "alignment_type": a.alignment_type,
+                        "issues": a.issues,
+                    }
+                    break
 
     # ==========================================
     # Rounds 3-5: AI Classification + Verification + Report
@@ -364,6 +531,7 @@ def run_audit(proof_file: str, mode: str = "auto", theorem: Optional[str] = None
         sorry_diagnoses=sorry_diagnoses,
         proof_title=proof_name,
         fidelity_score=fidelity,
+        reference_context=reference_context,
     )
 
     # ==========================================
@@ -383,8 +551,7 @@ def run_audit(proof_file: str, mode: str = "auto", theorem: Optional[str] = None
 
     # ── Proof Graph Tree Display ──
     emoji_map = {
-        "A1": "🔴", "A2": "🟠", "B": "🟡", "C": "🟤",
-        "D": "🟢", "E": "⚪", "F": "🔵", "G": "⬜",
+        "A": "🔴", "B": "🟢", "C": "🟠", "D": "🔵", "E": "⚪",
     }
     type_map = {c.sorry.sorry_id: c for c in report.classifications}
 
@@ -405,8 +572,12 @@ def run_audit(proof_file: str, mode: str = "auto", theorem: Optional[str] = None
         print()
 
     # ── Flat classification detail ──
-    roots = [c for c in report.classifications if c.classification.value != "G"]
-    blocked = [c for c in report.classifications if c.classification.value == "G"]
+    roots = [c for c in report.classifications if c.classification != SorryType.E_INDETERMINATE or True]
+    blocked = []  # E_INDETERMINATE with blocked_by are the blocked descendants
+    for c in report.classifications:
+        if c.sorry.blocked_by and c.classification == SorryType.E_INDETERMINATE:
+            blocked.append(c)
+            roots = [r for r in roots if r.sorry.sorry_id != c.sorry.sorry_id]
 
     if roots:
         print("  ── Classification Detail ──")
@@ -428,12 +599,56 @@ def run_audit(proof_file: str, mode: str = "auto", theorem: Optional[str] = None
     if blocked:
         print(f"  ── Blocked Descendants ({len(blocked)}) ──")
         for cls in blocked:
-            print(f"  ⬜ [G] Line {cls.sorry.line} ← blocked by {cls.sorry.blocked_by}")
+            print(f"  ⚪ [E] Line {cls.sorry.line} ← blocked by {cls.sorry.blocked_by}")
         print()
 
     print(f"{'='*60}")
     print(f"  {report.summary}")
     print(f"{'='*60}")
+
+    # ==========================================
+    # Round 6: Adjudicator — Independent Final Review
+    # ==========================================
+    from core.narrator import adjudicate
+
+    tracker.set_round("R6_adjudication")
+    print(f"\n⚖️  Round 6: Independent Adjudication...")
+    print(f"   (Adjudicator reviews ALL evidence independently)")
+
+    adjudication = adjudicate(
+        client=client,
+        original_proof=proof_text,
+        lean_code=lean_code,
+        report=report,
+        fidelity_score=bt_result.fidelity_score if bt_result else None,
+        proof_structure_summary=proof_structure.summary() if proof_structure else None,
+    )
+
+    # Display overrides
+    if adjudication.has_overrides:
+        print(f"\n   ⚠️  OVERRIDES DETECTED:")
+        for o in adjudication.overrides:
+            if o.override:
+                print(f"   🔄 {o.sorry_id}: {o.original_type} → {o.final_type}")
+                print(f"      {o.review_note}")
+    else:
+        print(f"   ✅ All classifications confirmed by Adjudicator")
+
+    # Show final verdict (may differ from Diagnostician's)
+    diag_verdict = report.verdict
+    adj_verdict = adjudication.final_verdict
+    if adj_verdict != diag_verdict:
+        print(f"\n   🔄 Verdict changed: {diag_verdict} → {adj_verdict}")
+    print(f"   Final verdict: {adj_verdict} (confidence: {adjudication.confidence:.0%})")
+
+    # Display narrative
+    print(f"\n{'─'*60}")
+    print(f"  📖 FINAL REPORT (for the mathematician)")
+    print(f"{'─'*60}")
+    print()
+    print(adjudication.narrative)
+    print()
+    print(f"{'─'*60}")
 
     # Save report as JSON
     report_dir = ROOT_DIR / "reports"
@@ -442,14 +657,19 @@ def run_audit(proof_file: str, mode: str = "auto", theorem: Optional[str] = None
 
     report_data = {
         "proof_title": report.proof_title,
-        "verdict": report.verdict,
+        "diagnostician_verdict": report.verdict,
+        "final_verdict": adjudication.final_verdict,
+        "adjudicator_confidence": adjudication.confidence,
         "total_sorrys": report.total_sorrys,
+        "adjudication": adjudication.to_dict(),
         "back_translation": {
             "mode": bt_mode.value,
             "fidelity_score": bt_result.fidelity_score if bt_result else None,
             "overall_match": bt_result.overall_match if bt_result else None,
             "translation_attempts": translation_attempt + 1,
             "persistent_low_fidelity": persistent_low_fidelity,
+            "back_translated_text": bt_result.back_translation if bt_result else None,
+            "original_proof": proof_text if bt_result else None,
             "flagged_steps": [
                 {
                     "step_id": c.step_id,
@@ -469,6 +689,7 @@ def run_audit(proof_file: str, mode: str = "auto", theorem: Optional[str] = None
                 "goal": c.sorry.lean_goal,
                 "type": c.classification.value,
                 "confidence": c.confidence,
+                "verification_score": c.verification_score,
                 "reasoning": c.reasoning,
                 "blocked_by": c.sorry.blocked_by,
                 "salvageable": c.salvageable,
@@ -479,6 +700,26 @@ def run_audit(proof_file: str, mode: str = "auto", theorem: Optional[str] = None
         ],
         "cost": tracker.to_dict(),
         "proof_graph": proof_graph.to_dict(),
+        "proof_structure": proof_structure.to_dict(),
+        "plan_goal_alignment": {
+            "overall_score": alignment_result.overall_score if alignment_result else None,
+            "structural_match": alignment_result.structural_match if alignment_result else None,
+            "step_count_plan": alignment_result.step_count_plan if alignment_result else 0,
+            "step_count_goals": alignment_result.step_count_goals if alignment_result else 0,
+            "alignments": [
+                {
+                    "step_id": a.step_id,
+                    "plan_claim": a.plan_claim,
+                    "lean_goal": a.lean_goal,
+                    "alignment_score": a.alignment_score,
+                    "alignment_type": a.alignment_type,
+                    "issues": a.issues,
+                }
+                for a in (alignment_result.alignments if alignment_result else [])
+            ],
+            "unmatched_plan_steps": alignment_result.unmatched_plan_steps if alignment_result else [],
+            "unmatched_goals": alignment_result.unmatched_goals if alignment_result else [],
+        } if alignment_result else None,
     }
     report_json.write_text(json.dumps(report_data, indent=2, ensure_ascii=False))
     print(f"\n📄 Report saved: {report_json}")
@@ -491,18 +732,45 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Proof Auditor — Audit mathematical proofs for logical errors"
     )
-    parser.add_argument("proof_file", help="Path to the proof file (.txt or .tex)")
+    parser.add_argument("proof_file", help="Path to the proof file (.txt, .tex, or .pdf)")
     parser.add_argument(
         "--mode",
-        choices=["off", "auto", "human", "hybrid"],
+        choices=["off", "auto", "human", "hybrid", "web"],
         default="auto",
         help="Back-translation verification mode (default: auto)",
     )
     parser.add_argument(
         "--theorem",
         default=None,
-        help="LaTeX label of theorem to audit (e.g., thm:main). Only for .tex files.",
+        help="Theorem to audit (label for .tex, name/number for .pdf).",
+    )
+    parser.add_argument(
+        "--backend",
+        choices=["pymupdf", "ai-enhance", "vision"],
+        default="pymupdf",
+        help="PDF extraction backend (default: pymupdf, zero API cost). "
+             "ai-enhance uses AI to restore LaTeX. "
+             "vision renders pages as images for scanned PDFs (highest cost).",
+    )
+    parser.add_argument(
+        "--pages",
+        default=None,
+        help="Page range for PDF extraction (e.g., '1-5,8'). Only for .pdf files.",
+    )
+    parser.add_argument(
+        "--refs",
+        nargs='*',
+        default=None,
+        help="Reference PDF files cited by the proof (e.g., --refs ref1.pdf ref2.pdf). "
+             "Theorems are extracted via AI and provided to the Diagnostician and Verifier.",
     )
     args = parser.parse_args()
 
-    run_audit(args.proof_file, mode=args.mode, theorem=args.theorem)
+    run_audit(
+        args.proof_file,
+        mode=args.mode,
+        theorem=args.theorem,
+        backend=args.backend,
+        pages=args.pages,
+        refs=args.refs,
+    )
